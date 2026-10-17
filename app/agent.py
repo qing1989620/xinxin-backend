@@ -133,21 +133,65 @@ class TaskManager:
             keys.append(vault_key.read_text(encoding="ascii").strip())
         for row in self.store.all("SELECT key FROM settings WHERE key LIKE 'secret:%'"):
             keys.append(self.auth.secret(row["key"][7:]))
-        for key in keys:
-            if key:
-                for form in {
-                    key,
-                    json.dumps(key, ensure_ascii=False)[1:-1],
-                    json.dumps(key, ensure_ascii=True)[1:-1],
-                }:
-                    text = text.replace(form, "[redacted]")
-        text = re.sub(
-            r"-----BEGIN [A-Z ]*PRIVATE KEY-----.*?-----END [A-Z ]*PRIVATE KEY-----",
-            "[redacted private key]",
-            text,
-            flags=re.S,
-        )
-        return safe_summary(text)
+        forms = {
+            form
+            for key in keys
+            if key
+            for form in (
+                key,
+                json.dumps(key, ensure_ascii=False)[1:-1],
+                json.dumps(key, ensure_ascii=True)[1:-1],
+            )
+        }
+
+        def redact_text(text):
+            for form in forms:
+                text = text.replace(form, "[redacted]")
+            text = re.sub(
+                r"-----BEGIN [A-Z ]*PRIVATE KEY-----.*?-----END [A-Z ]*PRIVATE KEY-----",
+                "[redacted private key]",
+                text,
+                flags=re.S,
+            )
+            return safe_summary(text)
+
+        def redact_data(data):
+            if isinstance(data, str):
+                return redact_text(data)
+            if isinstance(data, list):
+                return [redact_data(item) for item in data]
+            if isinstance(data, dict):
+                secret_fields = {
+                    "apikey",
+                    "password",
+                    "secret",
+                    "authorization",
+                    "token",
+                    "privatekey",
+                    "modelapikey",
+                    "smtppassword",
+                }
+                return {
+                    key: "[redacted]"
+                    if key.lower().replace("_", "").replace("-", "") in secret_fields
+                    else redact_data(item)
+                    for key, item in data.items()
+                }
+            return data
+
+        try:
+            structured = json.loads(text)
+        except (ValueError, TypeError):
+            structured = None
+        if isinstance(structured, (dict, list)):
+            # Redact values before serialization so escaping/cursors stay valid.
+            result = encode(redact_data(structured))
+            return (
+                result
+                if len(result) <= 16000
+                else encode({"truncated": True, "preview": result[:6000]})
+            )
+        return redact_text(text)
 
     def conversation(self, title="新对话"):
         ident = uid()
@@ -304,7 +348,7 @@ class TaskManager:
         @tools.register()
         def read_document(file_id: str, offset: int = 0, limit: int = 12000):
             """Read one page of private document text. Follow next_offset until null to read the full document."""
-            return self.library.read(file_id, offset, limit)
+            return self.library.read(file_id, offset, min(limit, 6000))
 
         @tools.register()
         def list_files(path: str = "."):
@@ -624,6 +668,7 @@ class TaskManager:
                             system_prompt=prompt,
                             max_tool_loop=run["max_calls"],
                             max_context_length=30000,
+                            max_tool_result_length=16000,
                         )
                         history = self.store.all(
                             "SELECT role,content FROM messages WHERE conversation_id=? ORDER BY created DESC LIMIT 20",

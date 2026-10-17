@@ -48,7 +48,7 @@ class SkillPackages:
             text = raw.decode("utf-8-sig")
         except UnicodeError:
             raise ValueError("此参考资源不是可读取的 UTF-8 文本") from None
-        end = min(offset + 12000, len(text))
+        end = min(offset + 6000, len(text))
         return {
             "name": name,
             "path": path,

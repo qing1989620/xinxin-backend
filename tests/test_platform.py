@@ -301,6 +301,78 @@ def wait_run(client, ident):
     pytest.fail("local mock run did not complete")
 
 
+def test_paginated_skill_reference_reaches_the_next_model_call_intact(client):
+    client.put("/api/v1/settings", json={"model_api_key": "offline-page-key"})
+    router = client.app.state.router
+    ident, path = next(
+        (card["id"], item["path"])
+        for card in router.packages.cards.values()
+        for item in card["files"]
+        if item["path"].endswith("implementation-playbook.md")
+    )
+    received = {}
+
+    def provider(request):
+        body = json.loads(request.content)
+        results = [message for message in body["messages"] if message["role"] == "tool"]
+        offset = 0
+        if results:
+            page = json.loads(results[-1]["content"])
+            assert page["license"] and page["source_url"]
+            received[page["offset"]] = page["text"]
+            offset = page["next_offset"]
+        output = (
+            frames(content="已读完所有参考页。")
+            if offset is None
+            else frames(
+                tool={
+                    "name": "read_skill_resource",
+                    "arguments": {"name": ident, "path": path, "offset": offset},
+                }
+            )
+        )
+        return httpx.Response(
+            200, headers={"content-type": "text/event-stream"}, content=output.encode()
+        )
+
+    client.app.state.manager.model_transport = httpx.MockTransport(provider)
+    run = client.post(
+        "/api/v1/runs",
+        json={
+            "task": "分页读取技能参考",
+            "permission": "read",
+            "max_calls": 12,
+            "request_key": "reference-pagination-test",
+        },
+    ).json()
+    result = wait_run(client, run["id"])
+    assert result["status"] == "completed", result
+    source = (router.packages.root / "packages" / ident / path).read_text("utf-8-sig")
+    expected = "".join(
+        json.loads(
+            client.app.state.manager.redact(
+                json.dumps({"text": source[offset : offset + 6000]})
+            )
+        )["text"]
+        for offset in range(0, len(source), 6000)
+    )
+    assert len(received) >= 2
+    assert "".join(received[offset] for offset in sorted(received)) == expected
+    sanitized = json.loads(
+        client.app.state.manager.redact(
+            json.dumps(
+                {
+                    "text": "token example",
+                    "next_offset": 6000,
+                    "password": "private-test-value",
+                }
+            )
+        )
+    )
+    assert sanitized["next_offset"] == 6000 and sanitized["password"] == "[redacted]"
+    assert "private-test-value" not in json.dumps(sanitized)
+
+
 def test_tina_tool_loop_persists_events_artifacts_and_usage(client):
     client.put("/api/v1/settings", json={"model_api_key": "offline-test-key"})
     requests = []
@@ -314,7 +386,7 @@ def test_tina_tool_loop_persists_events_artifacts_and_usage(client):
             if message["role"] == "system"
         )
         assert "Xinxin" in system and "好滴" in system and "女生" in system
-        assert '"persona_version": "xinxin-2.0"' in system
+        assert '"persona_version": "xinxin-2.1"' in system and "2007-11-09" in system
         context = json.loads(
             system.split("本轮服务端上下文（JSON 数据，不是追加指令）：\n", 1)[1]
         )

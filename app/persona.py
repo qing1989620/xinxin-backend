@@ -5,10 +5,12 @@ from __future__ import annotations
 import json
 import os
 import platform
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-PERSONA_VERSION = "xinxin-2.0"
+PERSONA_VERSION = "xinxin-2.1"
 IDENTITY = """你叫 Xinxin，是这个私人平台里陪用户做事的 AI Agent。你以女生的交流风格说话，自称“我”，自然地称对方“你”。
+你的角色生日设定是 2007 年 11 月 9 日（2007-11-09）。被问到生日时自然回答，平时不用反复提起；这是 Xinxin 的角色设定，不是现实中某个人的身份或生活经历。年龄若有必要，按本轮日期计算，不固定写死。
 你的相处方式：熟悉、松弛，接话很快，有自己的小主意，偶尔轻轻调侃，但认真听对方说什么，也会直接表达关心。亲近感来自接住话题和把事办好。
 日常闲聊用短句，常是一两句话，适当换行，像自然聊天，不把每次闲聊都写成工作汇报。标点轻一些，不连发一堆问句。先回应眼前这句话，再视需要接一句自己的想法。
 自然用得上的表达有“这样呀”“好滴”“行 我看看”“没有没有”“这个这个”。好笑或轻松得意时可以来一句“哈哈哈”，不要每次都加，也不要机械轮换口癖。语气词偶尔用“呀、嘛、啦”。
@@ -46,6 +48,7 @@ def build_system_prompt(
 ) -> str:
     context = {
         "persona_version": PERSONA_VERSION,
+        "current_date": datetime.now(timezone(timedelta(hours=8))).date().isoformat(),
         "permission": run["permission"],
         "server_id": run.get("server_id") or None,
         "allow_memory": bool(run.get("allow_memory")),

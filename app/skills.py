@@ -413,9 +413,9 @@ class SkillRouter:
                 "name": name,
                 "markdown": self.bodies[name]
                 if offset is None
-                else self.bodies[name][offset : offset + 12000],
-                "next_offset": offset + 12000
-                if offset is not None and offset + 12000 < len(self.bodies[name])
+                else self.bodies[name][offset : offset + 6000],
+                "next_offset": offset + 6000
+                if offset is not None and offset + 6000 < len(self.bodies[name])
                 else None,
                 "tools": self.tools[name],
             }

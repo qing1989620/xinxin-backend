@@ -33,6 +33,7 @@ from .model import endpoint
 from .mail import MailCodes
 from .skills import SkillRouter
 from .store import Store, encode, now, uid
+from .uploads import UploadGuard, finish_upload
 
 
 class Input(BaseModel):
@@ -169,7 +170,6 @@ def create_app(config=None):
     auth = Auth(store)
     mail = MailCodes(store, auth)
     library = FileLibrary(store)
-    upload_slots = asyncio.Semaphore(2)
     router = SkillRouter(store)
     manager = TaskManager(store, auth, config, library, router)
 
@@ -213,6 +213,7 @@ def create_app(config=None):
     app.state.store, app.state.auth, app.state.manager = store, auth, manager
     app.state.library, app.state.router, app.state.config = library, router, config
     app.state.mail = mail
+    app.add_middleware(UploadGuard, auth=auth)
     app.add_middleware(
         CORSMiddleware,
         allow_origins=list(config.origins),
@@ -680,14 +681,16 @@ def create_app(config=None):
         ),
     ):
         try:
-            async with upload_slots:
-                return await asyncio.to_thread(
+            worker = asyncio.create_task(
+                asyncio.to_thread(
                     library.save_stream,
                     file.filename or "file",
                     file.file,
                     file.content_type,
                     request_id=x_upload_id,
                 )
+            )
+            return await finish_upload(worker)
         except FileTooLarge as exc:
             raise HTTPException(413, str(exc)) from None
         except UploadConflict as exc:
