@@ -19,6 +19,7 @@ node_modules/
 tina.env
 config.local.yml
 data/
+.qa-data/
 storage/
 uploads/
 artifacts/

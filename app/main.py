@@ -1,0 +1,828 @@
+from __future__ import annotations
+
+import asyncio
+import hashlib
+import hmac
+import json
+import sqlite3
+from contextlib import asynccontextmanager
+from pathlib import Path
+from typing import Literal
+
+from fastapi import (
+    Depends,
+    FastAPI,
+    Header,
+    HTTPException,
+    Request,
+    UploadFile,
+    File,
+    Query,
+)
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse, StreamingResponse
+from pydantic import BaseModel, ConfigDict, Field
+
+from .agent import TaskManager
+from .auth import Auth, password_hash, password_matches
+from .config import Config, ROOT
+from .creative import gallery, plot_csv, transform_image
+from .files import FileLibrary, MAX_UPLOAD
+from .model import endpoint
+from .skills import SkillRouter
+from .store import Store, encode, now, uid
+
+
+class Input(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+
+class Login(Input):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=False)
+    name: str = Field(min_length=1, max_length=80)
+    password: str = Field(min_length=1, max_length=256)
+
+
+class Setup(Login):
+    setup_code: str = Field(min_length=1, max_length=200)
+
+
+class Password(Input):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=False)
+    current: str
+    password: str = Field(min_length=10, max_length=256)
+
+
+class Conversation(Input):
+    title: str = Field(default="新对话", min_length=1, max_length=80)
+
+
+class RunInput(Input):
+    task: str = Field(min_length=1, max_length=12000)
+    conversation_id: str | None = None
+    permission: Literal["read", "workspace", "full"] = "read"
+    server_id: str | None = None
+    max_calls: int = Field(default=8, ge=1, le=20)
+    max_seconds: int = Field(default=300, ge=10, le=1800)
+    request_key: str = Field(min_length=8, max_length=100)
+    file_ids: list[str] = Field(default_factory=list, max_length=10)
+
+
+class Record(Input):
+    kind: Literal["article", "collection", "photo", "poem", "resume"]
+    payload: dict
+
+
+class Server(Input):
+    name: str = Field(min_length=1, max_length=80)
+    host: str = Field(pattern=r"^[A-Za-z0-9_.:-]{1,200}$")
+    port: int = Field(default=22, ge=1, le=65535)
+    username: str = Field(default="root", pattern=r"^[A-Za-z0-9_.-]{1,80}$")
+    workdir: str = Field(default="/srv/xinxin", pattern=r"^/[A-Za-z0-9_./-]{1,200}$")
+    host_key: str = Field(default="", max_length=10000)
+    private_key: str = Field(default="", max_length=20000)
+
+
+class Settings(Input):
+    model: str | None = Field(default=None, max_length=120)
+    model_url: str | None = Field(default=None, max_length=500)
+    model_api_key: str | None = Field(default=None, max_length=500)
+    image_url: str | None = Field(default=None, max_length=500)
+    image_model: str | None = Field(default=None, max_length=120)
+    image_api_key: str | None = Field(default=None, max_length=500)
+
+
+class Memory(Input):
+    content: str = Field(min_length=1, max_length=1000)
+    category: str = Field(default="preference", max_length=30)
+
+
+class Plot(Input):
+    file_id: str
+    x: str = Field(max_length=200)
+    y: str = Field(max_length=200)
+    kind: Literal["line", "bar", "scatter", "hist"] = "line"
+    title: str = Field(default="数据观察", max_length=100)
+    palette: str = "teal"
+    request_key: str = Field(min_length=8, max_length=100)
+
+
+class ImageTransform(Input):
+    file_id: str
+    style: Literal["collage", "distillation"]
+    instruction: str = Field(default="", max_length=3000)
+    request_key: str = Field(min_length=8, max_length=100)
+
+
+class Schedule(Input):
+    title: str = Field(min_length=1, max_length=100)
+    task: str = Field(min_length=1, max_length=12000)
+    interval_minutes: int = Field(ge=5, le=525600)
+    enabled: bool = True
+    permission: Literal["read", "workspace", "full"] = "read"
+    server_id: str | None = None
+
+
+class SkillFeedback(Input):
+    run_id: str
+    reward: float = Field(ge=0, le=1, allow_inf_nan=False)
+
+
+def create_app(config=None):
+    config = config or Config.from_env()
+    store = Store(config.data_dir)
+    auth = Auth(store)
+    library = FileLibrary(store)
+    router = SkillRouter(store)
+    manager = TaskManager(store, auth, config, library, router)
+
+    async def scheduled_jobs():
+        while True:
+            await asyncio.sleep(15)
+            for row in store.all(
+                "SELECT * FROM schedules WHERE enabled=1 AND next_at<=?", (now(),)
+            ):
+                try:
+                    # Only one process may lease a due occurrence.
+                    claimed = store.execute(
+                        "UPDATE schedules SET next_at=? WHERE id=? AND next_at=?",
+                        (
+                            now() + row["interval_minutes"] * 60000,
+                            row["id"],
+                            row["next_at"],
+                        ),
+                    )
+                    if claimed:
+                        await manager.submit(
+                            row["task"],
+                            permission=row["permission"],
+                            server_id=row["server_id"],
+                            request_key=f"schedule:{row['id']}:{row['next_at']}",
+                        )
+                except Exception as exc:
+                    store.audit(
+                        "schedule.failed", {"id": row["id"], "error": str(exc)[:300]}
+                    )
+
+    @asynccontextmanager
+    async def lifespan(app):
+        scheduler = asyncio.create_task(scheduled_jobs())
+        yield
+        scheduler.cancel()
+        await asyncio.gather(scheduler, return_exceptions=True)
+        await manager.close()
+
+    app = FastAPI(title="Xinxin Private Agent", version="0.1.0", lifespan=lifespan)
+    app.state.store, app.state.auth, app.state.manager = store, auth, manager
+    app.state.library, app.state.router, app.state.config = library, router, config
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=list(config.origins),
+        allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE"],
+        allow_headers=["Authorization", "Content-Type", "Last-Event-ID"],
+        expose_headers=["Content-Disposition"],
+    )
+
+    def owner(authorization: str | None = Header(default=None)):
+        return auth.require(authorization)
+
+    def require_row(table, ident):
+        if table not in {
+            "runs",
+            "files",
+            "records",
+            "memories",
+            "schedules",
+            "conversations",
+        }:
+            raise ValueError("未知表")
+        row = store.one(f"SELECT * FROM {table} WHERE id=?", (ident,))
+        if not row:
+            raise HTTPException(404, "内容不存在")
+        return row
+
+    @app.exception_handler(ValueError)
+    async def value_error(request, exc):
+        from fastapi.responses import JSONResponse
+
+        return JSONResponse(status_code=400, content={"detail": str(exc)})
+
+    @app.get("/health")
+    def health():
+        return {"status": "ok", "product": "Xinxin", "version": "0.1.0"}
+
+    @app.get("/api/v1/auth/status")
+    def auth_status():
+        return {
+            "configured": bool(store.one("SELECT id FROM owner")),
+            "registration": "disabled",
+        }
+
+    @app.post("/api/v1/auth/setup")
+    def setup(body: Setup):
+        if len(body.password) < 10:
+            raise HTTPException(422, "密码至少 10 个字符")
+        if not hmac.compare_digest(body.setup_code, config.setup_token):
+            raise HTTPException(403, "初始化码不正确，请查看后端 data/bootstrap.code")
+        try:
+            store.execute(
+                "INSERT INTO owner VALUES(1,?,?)",
+                (body.name, password_hash(body.password)),
+            )
+        except sqlite3.IntegrityError:
+            raise HTTPException(409, "主人账号已初始化，不能公开注册") from None
+        store.audit("owner.created", {})
+        return {"token": auth.issue(), "name": body.name}
+
+    @app.post("/api/v1/auth/login")
+    def login(body: Login, request: Request):
+        token = auth.login(
+            body.name, body.password, request.client.host if request.client else "local"
+        )
+        return {"token": token, "name": body.name}
+
+    @app.get("/api/v1/auth/me", dependencies=[Depends(owner)])
+    def me():
+        return {"name": store.one("SELECT name FROM owner WHERE id=1")["name"]}
+
+    @app.post("/api/v1/auth/logout")
+    def logout(token=Depends(owner)):
+        store.execute(
+            "DELETE FROM sessions WHERE hash=?",
+            (hashlib.sha256(token.encode()).hexdigest(),),
+        )
+        return {"ok": True}
+
+    @app.put("/api/v1/auth/password", dependencies=[Depends(owner)])
+    def password(body: Password):
+        row = store.one("SELECT password FROM owner WHERE id=1")
+        if not password_matches(body.current, row["password"]):
+            raise HTTPException(400, "原密码不正确")
+        with store.connect() as db:
+            db.execute(
+                "UPDATE owner SET password=? WHERE id=1",
+                (password_hash(body.password),),
+            )
+            db.execute("DELETE FROM sessions")
+        return {"token": auth.issue()}
+
+    @app.get("/api/v1/dashboard", dependencies=[Depends(owner)])
+    def dashboard():
+        counts = {
+            row["kind"]: row["n"]
+            for row in store.all("SELECT kind,COUNT(*) n FROM records GROUP BY kind")
+        }
+        counts["files"] = store.one("SELECT COUNT(*) n FROM files")["n"]
+        return {
+            "counts": counts,
+            "tasks": store.all("SELECT * FROM runs ORDER BY created DESC LIMIT 5"),
+            "recent_files": [
+                library.get(row["id"])
+                for row in store.all(
+                    "SELECT id FROM files ORDER BY created DESC LIMIT 4"
+                )
+            ],
+            "model_configured": bool(manager.model_config()[2]),
+            "model": manager.model_config()[1],
+            "skills": len(router.all()),
+            "active_tasks": store.one(
+                "SELECT COUNT(*) n FROM runs WHERE status IN ('queued','running','cancelling')"
+            )["n"],
+        }
+
+    @app.get("/api/v1/conversations", dependencies=[Depends(owner)])
+    def conversations():
+        return store.all("SELECT * FROM conversations ORDER BY updated DESC LIMIT 200")
+
+    @app.post("/api/v1/conversations", dependencies=[Depends(owner)])
+    def new_conversation(body: Conversation):
+        return {"id": manager.conversation(body.title)}
+
+    @app.get("/api/v1/conversations/{ident}", dependencies=[Depends(owner)])
+    def conversation(ident: str):
+        row = require_row("conversations", ident)
+        return {
+            **row,
+            "messages": store.all(
+                "SELECT * FROM messages WHERE conversation_id=? ORDER BY created",
+                (ident,),
+            ),
+            "runs": store.all(
+                "SELECT * FROM runs WHERE conversation_id=? ORDER BY created DESC",
+                (ident,),
+            ),
+        }
+
+    @app.delete("/api/v1/conversations/{ident}", dependencies=[Depends(owner)])
+    def delete_conversation(ident: str):
+        require_row("conversations", ident)
+        if store.one(
+            "SELECT id FROM runs WHERE conversation_id=? AND status IN ('queued','running','cancelling')",
+            (ident,),
+        ):
+            raise HTTPException(409, "请先停止此对话的运行任务")
+        with store.connect() as db:
+            db.execute("DELETE FROM messages WHERE conversation_id=?", (ident,))
+            db.execute("DELETE FROM conversations WHERE id=?", (ident,))
+        return {"ok": True}
+
+    @app.get("/api/v1/runs", dependencies=[Depends(owner)])
+    def runs(limit: int = Query(default=100, ge=1, le=200)):
+        return store.all("SELECT * FROM runs ORDER BY created DESC LIMIT ?", (limit,))
+
+    @app.post("/api/v1/runs", dependencies=[Depends(owner)])
+    async def submit(body: RunInput):
+        task = body.task
+        if body.file_ids:
+            attachments = [library.get(ident) for ident in body.file_ids]
+            task += "\n\n本轮附件（使用文件工具读取）：" + encode(
+                [{"id": f["id"], "name": f["name"]} for f in attachments]
+            )
+        return await manager.submit(
+            task,
+            body.conversation_id,
+            body.permission,
+            body.server_id,
+            body.max_calls,
+            body.max_seconds,
+            body.request_key,
+        )
+
+    @app.get("/api/v1/runs/{ident}", dependencies=[Depends(owner)])
+    def run_detail(ident: str):
+        return {
+            **require_row("runs", ident),
+            "files": [
+                library.get(row["id"])
+                for row in store.all("SELECT id FROM files WHERE run_id=?", (ident,))
+            ],
+        }
+
+    @app.post("/api/v1/runs/{ident}/cancel", dependencies=[Depends(owner)])
+    def cancel(ident: str):
+        return manager.cancel(ident)
+
+    @app.get("/api/v1/runs/{ident}/events", dependencies=[Depends(owner)])
+    async def events(
+        ident: str,
+        request: Request,
+        after: int = Query(default=0, ge=0),
+        last_event_id: str | None = Header(default=None),
+    ):
+        require_row("runs", ident)
+        if last_event_id:
+            if not last_event_id.isdigit() or len(last_event_id) > 12:
+                raise HTTPException(400, "无效事件游标")
+            after = max(after, int(last_event_id))
+
+        async def stream():
+            cursor = after
+            heartbeat = 0
+            while not await request.is_disconnected():
+                batch = store.events(ident, cursor)
+                for event in batch:
+                    yield f"id: {event['seq']}\ndata: {encode(event)}\n\n"
+                    cursor = event["seq"]
+                run = require_row("runs", ident)
+                if run["status"] not in {
+                    "queued",
+                    "running",
+                    "cancelling",
+                } and not store.events(ident, cursor):
+                    yield "event: end\ndata: {}\n\n"
+                    return
+                heartbeat += 1
+                if heartbeat % 50 == 0:
+                    yield ": keep-alive\n\n"
+                await asyncio.sleep(0.2)
+
+        return StreamingResponse(
+            stream(),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"},
+        )
+
+    @app.get("/api/v1/skills", dependencies=[Depends(owner)])
+    def skills(q: str = Query(default="", max_length=2000)):
+        return router.search(q) if q else router.all()
+
+    @app.get("/api/v1/skills/{name}", dependencies=[Depends(owner)])
+    def skill(name: str):
+        return router.load(name)
+
+    @app.post("/api/v1/skills/{name}/feedback", dependencies=[Depends(owner)])
+    def skill_feedback(name: str, body: SkillFeedback):
+        run = require_row("runs", body.run_id)
+        if run["status"] != "completed":
+            raise ValueError("只有完成的任务可以提供技能反馈")
+        evidence = [
+            {**event, "data": json.loads(event["data"])}
+            for event in store.all(
+                "SELECT kind,data FROM events WHERE run_id=? AND kind IN ('skills','tool.completed') ORDER BY seq",
+                (body.run_id,),
+            )
+        ]
+        selected = {
+            skill["id"]
+            for event in evidence
+            if event["kind"] == "skills"
+            for skill in event["data"].get("skills", [])
+        }
+        if name not in selected or not any(
+            event["kind"] == "tool.completed"
+            and event["data"].get("name") in router.tools.get(name, [])
+            for event in evidence
+        ):
+            raise ValueError("该任务没有此技能的选择与工具执行证据")
+        marker = "skill-feedback:" + body.run_id + ":" + name
+        with router.lock:
+            if store.setting(marker) is not None:
+                raise ValueError("此任务已提交过该技能的反馈")
+            router.bandit.update(run["task"], name, body.reward)
+            with store.connect() as db:
+                db.execute(
+                    "INSERT INTO settings VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                    ("skill-policy", encode(router.bandit.state_dict())),
+                )
+                db.execute(
+                    "INSERT INTO settings VALUES(?,?)", (marker, encode(body.reward))
+                )
+        return {"ok": True, "updates": router.bandit.n_updates}
+
+    @app.get("/api/v1/records", dependencies=[Depends(owner)])
+    def records(
+        kind: Literal["article", "collection", "photo", "poem", "resume"],
+        q: str = Query(default="", max_length=200),
+    ):
+        return [
+            {**row, "payload": json.loads(row["payload"])}
+            for row in store.all(
+                "SELECT * FROM records WHERE kind=? AND payload LIKE ? ORDER BY updated DESC LIMIT 500",
+                (kind, "%" + q + "%"),
+            )
+        ]
+
+    def save_record(body, ident=None):
+        if len(encode(body.payload).encode()) > 500000:
+            raise ValueError("内容过长")
+        if (
+            body.kind in {"article", "collection", "photo"}
+            and not str(
+                body.payload.get("title") or body.payload.get("name") or ""
+            ).strip()
+        ):
+            raise ValueError("请填写标题")
+        if body.kind == "poem" and not str(body.payload.get("content", "")).strip():
+            raise ValueError("请填写诗词内容")
+        if body.payload.get("file_id"):
+            library.get(body.payload["file_id"])
+        ident = ident or uid()
+        existing = store.one("SELECT kind FROM records WHERE id=?", (ident,))
+        if existing and existing["kind"] != body.kind:
+            raise ValueError("内容类型不能变更")
+        store.execute(
+            "INSERT INTO records VALUES(?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET payload=excluded.payload,updated=excluded.updated",
+            (ident, body.kind, encode(body.payload), now(), now()),
+        )
+        return {**require_row("records", ident), "payload": body.payload}
+
+    @app.post("/api/v1/records", dependencies=[Depends(owner)])
+    def add_record(body: Record):
+        return save_record(body)
+
+    @app.put("/api/v1/records/{ident}", dependencies=[Depends(owner)])
+    def update_record(ident: str, body: Record):
+        require_row("records", ident)
+        return save_record(body, ident)
+
+    @app.delete("/api/v1/records/{ident}", dependencies=[Depends(owner)])
+    def delete_record(ident: str):
+        row = require_row("records", ident)
+        if row["kind"] == "server":
+            raise HTTPException(400, "使用服务器专属接口")
+        store.execute("DELETE FROM records WHERE id=?", (ident,))
+        store.audit("content.deleted", {"id": ident, "kind": row["kind"]})
+        return {"ok": True}
+
+    @app.get("/api/v1/files", dependencies=[Depends(owner)])
+    def files(q: str = Query(default="", max_length=200)):
+        return [
+            library.get(row["id"])
+            for row in store.all(
+                "SELECT id FROM files WHERE name LIKE ? ORDER BY created DESC LIMIT 500",
+                ("%" + q + "%",),
+            )
+        ]
+
+    @app.post("/api/v1/files", dependencies=[Depends(owner)])
+    async def upload(file: UploadFile = File(...)):
+        chunks, total = [], 0
+        while chunk := await file.read(1024 * 1024):
+            total += len(chunk)
+            if total > MAX_UPLOAD:
+                raise HTTPException(413, "文件超过 24 MB 上限")
+            chunks.append(chunk)
+        return await asyncio.to_thread(
+            library.save, file.filename or "file", b"".join(chunks), file.content_type
+        )
+
+    @app.get("/api/v1/files/search", dependencies=[Depends(owner)])
+    def search_files(q: str = Query(min_length=1, max_length=2000)):
+        return library.search(q)
+
+    @app.get("/api/v1/files/{ident}/text", dependencies=[Depends(owner)])
+    def file_text(ident: str):
+        return library.read(ident)
+
+    @app.get("/api/v1/files/{ident}/metadata", dependencies=[Depends(owner)])
+    def file_metadata(ident: str):
+        return library.get(ident)
+
+    @app.get("/api/v1/files/{ident}/columns", dependencies=[Depends(owner)])
+    def file_columns(ident: str):
+        if not library.get(ident)["name"].lower().endswith(".csv"):
+            raise ValueError("请选择 CSV 文件")
+        import pandas as pd
+
+        try:
+            return {"columns": list(pd.read_csv(library.path(ident), nrows=0).columns)}
+        except Exception:
+            raise ValueError("无法读取 CSV 列，请检查文件编码与格式") from None
+
+    @app.get("/api/v1/files/{ident}/download", dependencies=[Depends(owner)])
+    def download(ident: str, inline: bool = False):
+        row = library.get(ident)
+        safe_image = row["mime"] in {
+            "image/png",
+            "image/jpeg",
+            "image/webp",
+            "image/gif",
+        }
+        return FileResponse(
+            library.path(ident),
+            media_type=row["mime"] if safe_image else "application/octet-stream",
+            filename=row["name"],
+            content_disposition_type=(
+                "inline" if inline and safe_image else "attachment"
+            ),
+            headers={
+                "Cache-Control": "no-store",
+                "X-Content-Type-Options": "nosniff",
+                "Content-Security-Policy": "sandbox; default-src 'none'",
+            },
+        )
+
+    @app.delete("/api/v1/files/{ident}", dependencies=[Depends(owner)])
+    def delete_file(ident: str):
+        library.delete(ident)
+        return {"ok": True}
+
+    @app.get("/api/v1/servers", dependencies=[Depends(owner)])
+    def servers():
+        return [
+            {
+                "id": row["id"],
+                **json.loads(row["payload"]),
+                "key_configured": bool(auth.secret("ssh:" + row["id"])),
+            }
+            for row in store.all(
+                "SELECT * FROM records WHERE kind='server' ORDER BY created DESC"
+            )
+        ]
+
+    @app.post("/api/v1/servers", dependencies=[Depends(owner)])
+    def add_server(body: Server):
+        ident = uid()
+        payload = body.model_dump(exclude={"private_key"})
+        if body.private_key:
+            auth.set_secret("ssh:" + ident, body.private_key)
+        store.execute(
+            "INSERT INTO records VALUES(?,?,?,?,?)",
+            (ident, "server", encode(payload), now(), now()),
+        )
+        return {"id": ident, **payload, "key_configured": bool(body.private_key)}
+
+    @app.delete("/api/v1/servers/{ident}", dependencies=[Depends(owner)])
+    def delete_server(ident: str):
+        row = require_row("records", ident)
+        if row["kind"] != "server":
+            raise HTTPException(404, "服务器不存在")
+        if store.one(
+            "SELECT id FROM runs WHERE server_id=? AND status IN ('queued','running','cancelling')",
+            (ident,),
+        ):
+            raise HTTPException(409, "请先停止该服务器的活动任务")
+        store.execute("DELETE FROM records WHERE id=?", (ident,))
+        store.execute("DELETE FROM settings WHERE key=?", ("secret:ssh:" + ident,))
+        return {"ok": True}
+
+    @app.put("/api/v1/servers/{ident}", dependencies=[Depends(owner)])
+    def update_server(ident: str, body: Server):
+        row = require_row("records", ident)
+        if row["kind"] != "server":
+            raise HTTPException(404, "服务器不存在")
+        if store.one(
+            "SELECT id FROM runs WHERE server_id=? AND status IN ('queued','running','cancelling')",
+            (ident,),
+        ):
+            raise HTTPException(409, "请先停止该服务器的活动任务，再修改连接信息")
+        payload = body.model_dump(exclude={"private_key"})
+        if body.private_key:
+            auth.set_secret("ssh:" + ident, body.private_key)
+        store.execute(
+            "UPDATE records SET payload=?,updated=? WHERE id=?",
+            (encode(payload), now(), ident),
+        )
+        store.audit("server.updated", {"id": ident})
+        return {
+            "id": ident,
+            **payload,
+            "key_configured": bool(auth.secret("ssh:" + ident)),
+        }
+
+    @app.get("/api/v1/memories", dependencies=[Depends(owner)])
+    def memories():
+        return store.all("SELECT * FROM memories ORDER BY created DESC")
+
+    @app.post("/api/v1/memories", dependencies=[Depends(owner)])
+    def memory(body: Memory):
+        ident = uid()
+        store.execute(
+            "INSERT INTO memories VALUES(?,?,?,?)",
+            (ident, body.content, body.category, now()),
+        )
+        return {"id": ident, **body.model_dump()}
+
+    @app.put("/api/v1/memories/{ident}", dependencies=[Depends(owner)])
+    def update_memory(ident: str, body: Memory):
+        require_row("memories", ident)
+        store.execute(
+            "UPDATE memories SET content=?,category=? WHERE id=?",
+            (body.content, body.category, ident),
+        )
+        return {"id": ident, **body.model_dump()}
+
+    @app.delete("/api/v1/memories/{ident}", dependencies=[Depends(owner)])
+    def delete_memory(ident: str):
+        store.execute("DELETE FROM memories WHERE id=?", (ident,))
+        return {"ok": True}
+
+    @app.get("/api/v1/settings", dependencies=[Depends(owner)])
+    def settings():
+        url, model, key = manager.model_config()
+        return {
+            "model_url": url,
+            "model": model,
+            "model_configured": bool(key),
+            "image_url": store.setting("image_url", ""),
+            "image_model": store.setting("image_model", "gpt-image-1"),
+            "image_configured": bool(auth.secret("image_api_key")),
+            "zine_installed": (
+                store.directory / "skills/scenes-gathered-zine-v1-3/SKILL.md"
+            ).exists(),
+            "registration": "disabled",
+        }
+
+    @app.put("/api/v1/settings", dependencies=[Depends(owner)])
+    def save_settings(body: Settings):
+        values = body.model_dump(exclude_none=True)
+        if "model" in values and not values["model"]:
+            raise ValueError("模型 ID 不能为空")
+        if "model_url" in values and not values["model_url"]:
+            raise ValueError("对话接口地址不能为空")
+        for key, value in values.items():
+            if key.endswith("_url") and value:
+                endpoint(value)
+        for key, value in values.items():
+            if key.endswith("api_key"):
+                if value:
+                    auth.set_secret(key, value)
+            else:
+                store.set_setting(key, value)
+        return settings()
+
+    @app.get("/api/v1/tools/gallery", dependencies=[Depends(owner)])
+    def chart_gallery():
+        return gallery()
+
+    @app.get("/api/v1/tools/gallery/{name}", dependencies=[Depends(owner)])
+    def gallery_image(name: str):
+        if name not in {row["id"] for row in gallery()}:
+            raise HTTPException(404, "样图不存在")
+        return FileResponse(
+            ROOT / "resources/plot/gallery" / (name + ".png"),
+            media_type="image/png",
+            headers={"Cache-Control": "private, max-age=3600"},
+        )
+
+    @app.post("/api/v1/tools/plot", dependencies=[Depends(owner)])
+    async def make_plot(body: Plot):
+        library.path(body.file_id)
+
+        async def operation(ident, flag):
+            worker = asyncio.create_task(
+                asyncio.to_thread(
+                    plot_csv,
+                    library,
+                    body.file_id,
+                    body.x,
+                    body.y,
+                    body.kind,
+                    body.title,
+                    body.palette,
+                    ident,
+                    flag,
+                )
+            )
+            try:
+                return await asyncio.shield(worker)
+            except asyncio.CancelledError:
+                await asyncio.gather(worker, return_exceptions=True)
+                raise
+
+        return await manager.submit(
+            "绘图 · " + body.title,
+            permission="workspace",
+            request_key=body.request_key,
+            operation=operation,
+            operation_input=body.model_dump(exclude={"request_key"}),
+        )
+
+    @app.post("/api/v1/tools/image", dependencies=[Depends(owner)])
+    async def make_image(body: ImageTransform):
+        if not settings()["image_configured"] or not settings()["image_url"]:
+            raise HTTPException(503, "请先配置图像生成服务")
+
+        async def operation(ident, flag):
+            return await transform_image(
+                library, auth, body.file_id, body.style, body.instruction, ident
+            )
+
+        return await manager.submit(
+            "拾景 · " + ("实景拼贴" if body.style == "collage" else "影像蒸馏"),
+            permission="workspace",
+            request_key=body.request_key,
+            operation=operation,
+            operation_input=body.model_dump(exclude={"request_key"}),
+        )
+
+    @app.get("/api/v1/schedules", dependencies=[Depends(owner)])
+    def schedules():
+        return store.all("SELECT * FROM schedules ORDER BY next_at")
+
+    @app.post("/api/v1/schedules", dependencies=[Depends(owner)])
+    def add_schedule(body: Schedule):
+        ident = uid()
+        if body.server_id:
+            server = require_row("records", body.server_id)
+            if server["kind"] != "server":
+                raise ValueError("目标服务器不存在")
+        store.execute(
+            "INSERT INTO schedules(id,title,task,interval_minutes,next_at,enabled,permission,server_id) VALUES(?,?,?,?,?,?,?,?)",
+            (
+                ident,
+                body.title,
+                body.task,
+                body.interval_minutes,
+                now() + body.interval_minutes * 60000,
+                int(body.enabled),
+                body.permission,
+                body.server_id,
+            ),
+        )
+        return {"id": ident, **body.model_dump()}
+
+    @app.put("/api/v1/schedules/{ident}", dependencies=[Depends(owner)])
+    def update_schedule(ident: str, body: Schedule):
+        require_row("schedules", ident)
+        if body.server_id:
+            server = require_row("records", body.server_id)
+            if server["kind"] != "server":
+                raise ValueError("目标服务器不存在")
+        store.execute(
+            "UPDATE schedules SET title=?,task=?,interval_minutes=?,enabled=?,permission=?,server_id=? WHERE id=?",
+            (
+                body.title,
+                body.task,
+                body.interval_minutes,
+                int(body.enabled),
+                body.permission,
+                body.server_id,
+                ident,
+            ),
+        )
+        return {"id": ident, **body.model_dump()}
+
+    @app.delete("/api/v1/schedules/{ident}", dependencies=[Depends(owner)])
+    def delete_schedule(ident: str):
+        store.execute("DELETE FROM schedules WHERE id=?", (ident,))
+        return {"ok": True}
+
+    @app.get("/api/v1/audit", dependencies=[Depends(owner)])
+    def audit():
+        return store.all("SELECT * FROM audit ORDER BY created DESC LIMIT 200")
+
+    return app
+
+
+app = create_app()
