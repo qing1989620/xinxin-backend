@@ -109,6 +109,210 @@
         }
       }
     },
+    "/api/v1/auth/email/code": {
+      "post": {
+        "summary": "Email Code",
+        "operationId": "email_code_api_v1_auth_email_code_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EmailRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/auth/email/login": {
+      "post": {
+        "summary": "Email Login",
+        "operationId": "email_login_api_v1_auth_email_login_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EmailLogin"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/auth/email/reset": {
+      "post": {
+        "summary": "Email Reset",
+        "operationId": "email_reset_api_v1_auth_email_reset_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EmailReset"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/settings/email": {
+      "get": {
+        "summary": "Email Settings",
+        "operationId": "email_settings_api_v1_settings_email_get",
+        "parameters": [
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "summary": "Save Email Settings",
+        "operationId": "save_email_settings_api_v1_settings_email_put",
+        "parameters": [
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EmailSettings"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/auth/me": {
       "get": {
         "summary": "Me",
@@ -301,6 +505,16 @@
         "operationId": "conversations_api_v1_conversations_get",
         "parameters": [
           {
+            "name": "archived",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "default": false,
+              "title": "Archived"
+            }
+          },
+          {
             "name": "authorization",
             "in": "header",
             "required": false,
@@ -446,6 +660,120 @@
       "delete": {
         "summary": "Delete Conversation",
         "operationId": "delete_conversation_api_v1_conversations__ident__delete",
+        "parameters": [
+          {
+            "name": "ident",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Ident"
+            }
+          },
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "summary": "Rename Conversation",
+        "operationId": "rename_conversation_api_v1_conversations__ident__put",
+        "parameters": [
+          {
+            "name": "ident",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Ident"
+            }
+          },
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Conversation"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/conversations/{ident}/restore": {
+      "post": {
+        "summary": "Restore Conversation",
+        "operationId": "restore_conversation_api_v1_conversations__ident__restore_post",
         "parameters": [
           {
             "name": "ident",
@@ -1374,6 +1702,29 @@
             }
           },
           {
+            "name": "offset",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "default": 0,
+              "title": "Offset"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 16000,
+              "minimum": 1,
+              "default": 12000,
+              "title": "Limit"
+            }
+          },
+          {
             "name": "authorization",
             "in": "header",
             "required": false,
@@ -2247,6 +2598,59 @@
         }
       }
     },
+    "/api/v1/tools/gallery/{name}/reference": {
+      "get": {
+        "summary": "Gallery Reference",
+        "operationId": "gallery_reference_api_v1_tools_gallery__name__reference_get",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Name"
+            }
+          },
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/tools/plot": {
       "post": {
         "summary": "Make Plot",
@@ -2640,6 +3044,134 @@
         "type": "object",
         "title": "Conversation"
       },
+      "EmailLogin": {
+        "properties": {
+          "email": {
+            "type": "string",
+            "maxLength": 254,
+            "pattern": "^[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}$",
+            "title": "Email"
+          },
+          "code": {
+            "type": "string",
+            "pattern": "^\\d{6}$",
+            "title": "Code"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "email",
+          "code"
+        ],
+        "title": "EmailLogin"
+      },
+      "EmailRequest": {
+        "properties": {
+          "email": {
+            "type": "string",
+            "maxLength": 254,
+            "pattern": "^[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}$",
+            "title": "Email"
+          },
+          "scene": {
+            "type": "string",
+            "enum": [
+              "login",
+              "reset"
+            ],
+            "title": "Scene",
+            "default": "login"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "email"
+        ],
+        "title": "EmailRequest"
+      },
+      "EmailReset": {
+        "properties": {
+          "email": {
+            "type": "string",
+            "maxLength": 254,
+            "pattern": "^[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}$",
+            "title": "Email"
+          },
+          "code": {
+            "type": "string",
+            "pattern": "^\\d{6}$",
+            "title": "Code"
+          },
+          "password": {
+            "type": "string",
+            "maxLength": 256,
+            "minLength": 10,
+            "title": "Password"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "email",
+          "code",
+          "password"
+        ],
+        "title": "EmailReset"
+      },
+      "EmailSettings": {
+        "properties": {
+          "email": {
+            "type": "string",
+            "maxLength": 254,
+            "pattern": "^[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}$",
+            "title": "Email"
+          },
+          "smtp_host": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9.-]{1,200}$",
+            "title": "Smtp Host",
+            "default": "smtp.qq.com"
+          },
+          "smtp_port": {
+            "type": "integer",
+            "maximum": 65535.0,
+            "minimum": 1.0,
+            "title": "Smtp Port",
+            "default": 465
+          },
+          "smtp_mode": {
+            "type": "string",
+            "enum": [
+              "ssl",
+              "starttls"
+            ],
+            "title": "Smtp Mode",
+            "default": "ssl"
+          },
+          "smtp_username": {
+            "type": "string",
+            "maxLength": 254,
+            "pattern": "^[\\x21-\\x7e]*$",
+            "title": "Smtp Username",
+            "default": ""
+          },
+          "smtp_password": {
+            "type": "string",
+            "maxLength": 500,
+            "pattern": "^[\\x21-\\x7e]*$",
+            "title": "Smtp Password",
+            "default": ""
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "email"
+        ],
+        "title": "EmailSettings"
+      },
       "HTTPValidationError": {
         "properties": {
           "detail": {
@@ -2904,6 +3436,11 @@
             "type": "array",
             "maxItems": 10,
             "title": "File Ids"
+          },
+          "allow_memory": {
+            "type": "boolean",
+            "title": "Allow Memory",
+            "default": false
           }
         },
         "additionalProperties": false,
@@ -3053,7 +3590,8 @@
             "anyOf": [
               {
                 "type": "string",
-                "maxLength": 500
+                "maxLength": 500,
+                "pattern": "^[\\x21-\\x7e]*$"
               },
               {
                 "type": "null"
@@ -3089,7 +3627,8 @@
             "anyOf": [
               {
                 "type": "string",
-                "maxLength": 500
+                "maxLength": 500,
+                "pattern": "^[\\x21-\\x7e]*$"
               },
               {
                 "type": "null"

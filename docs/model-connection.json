@@ -1,0 +1,9 @@
+{
+  "key_storage": "encrypted_local_only",
+  "model": "deepseek-flash",
+  "http_status": 200,
+  "available_models": [
+    "deepseek-flash",
+    "deepseek-v4-pro"
+  ]
+}

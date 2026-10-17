@@ -19,6 +19,7 @@ class Config:
     model_url: str = "https://api.deepseek.com/chat/completions"
     api_key: str = ""
     origins: tuple[str, ...] = ()
+    task_concurrency: int = 1
 
     @classmethod
     def from_env(cls):
@@ -50,4 +51,5 @@ class Config:
             os.getenv("XINXIN_MODEL_URL", "https://api.deepseek.com/chat/completions"),
             os.getenv("DEEPSEEK_API_KEY", ""),
             origins,
+            max(1, min(4, int(os.getenv("XINXIN_TASK_CONCURRENCY", "1")))),
         )

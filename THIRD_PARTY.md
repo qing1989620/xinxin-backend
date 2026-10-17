@@ -7,5 +7,6 @@ This is a personal private project. No blanket open-source license is assigned t
 - `resources/plot`: liouhai/plot-is-all-you-need `7d995fd5367255b296d01e4eee2d7e01b1e6a7d3`. MIT code; original LICENSE and THIRD_PARTY_NOTICES retained for gallery images, which retain their own terms.
 - Optional private `data/skills`: Zeejay0/gathered-scenes-zine-skill `b9edb836c9dd5c5d80995e89ebcaba34b75fd58f`. Personal non-commercial license, retained locally. Not included in this Git repository. Installer and references make its separate status explicit.
 - myself and lankhub are sources of personal-content domain behavior and selected UI improvements; no original personal database, credentials or operating content is distributed.
+- Email verification follows the security design of LanKnight/lankhub `bca6ba6f011c6a2f1826d6ebd1543c408723eff9` (`src/lib/email/verify-code.ts`, MIT, Copyright (c) 2026 LanKnight). The Python implementation uses a separate SMTP transport; the upstream license is retained at `resources/licenses/lankhub-MIT.txt`.
 - zhishi was studied for knowledge and mobile behavior. Its AGPL source and learning business code are not copied into this product.
 - BadGoods audit instructions are used locally, not redistributed in this repository. mattpocock/skills is used for engineering review under its MIT license.

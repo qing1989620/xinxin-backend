@@ -33,6 +33,32 @@ class PlatformExecutor(ToolsExecutor):
         result = tool(**arguments)
         return encode(result) if isinstance(result, (dict, list)) else str(result)
 
+    async def aexecute(
+        self, calls, tools, _mcp_client=None, timeout=60, events=None, **kwargs
+    ):
+        # Validate before Tina's generic logger, which may include exception input.
+        for call in calls or []:
+            name = call["function"]["name"]
+            try:
+                if (
+                    not isinstance(json.loads(call["function"]["arguments"]), dict)
+                    or tools.get_tool(name=name) is None
+                ):
+                    raise ValueError("工具或参数无效")
+            except (ValueError, TypeError):
+                self.unresolved[name] = "工具或参数无效"
+                return [
+                    self._tool_call_result(
+                        encode({"ok": False, "error": "工具或参数无效，本批未执行"}),
+                        item["id"],
+                        item["function"]["name"],
+                    )
+                    for item in calls
+                ]
+        return await super().aexecute(
+            calls, tools, _mcp_client, timeout, events, **kwargs
+        )
+
     async def _async_dispatch(self, name, arguments, tool, timeout):
         if tool is None:
             self.unresolved[name] = "未知工具"
@@ -64,7 +90,7 @@ class PlatformExecutor(ToolsExecutor):
                 encode(result) if isinstance(result, (dict, list)) else str(result)
             )
         except Exception as exc:
-            self.unresolved[name] = safe_summary(str(exc))
+            self.unresolved[name] = self.sanitize(str(exc))
             return encode({"ok": False, "error": self.unresolved[name]})
 
     async def drain(self):
@@ -88,7 +114,7 @@ class TaskManager:
         self.store, self.auth, self.config = store, auth, config
         self.library, self.router = library, router
         self.tasks, self.cancellations = {}, {}
-        self.semaphore = asyncio.Semaphore(2)
+        self.semaphore = asyncio.Semaphore(config.task_concurrency)
         self.model_transport = None
 
     def model_config(self):
@@ -111,7 +137,7 @@ class TaskManager:
     def conversation(self, title="新对话"):
         ident = uid()
         self.store.execute(
-            "INSERT INTO conversations VALUES(?,?,?,?)",
+            "INSERT INTO conversations(id,title,created,updated) VALUES(?,?,?,?)",
             (ident, title[:80], now(), now()),
         )
         return ident
@@ -127,6 +153,7 @@ class TaskManager:
         request_key=None,
         operation=None,
         operation_input=None,
+        allow_memory=False,
     ):
         signature = hashlib.sha256(
             encode(
@@ -138,6 +165,7 @@ class TaskManager:
                     max_calls,
                     max_seconds,
                     operation_input,
+                    bool(allow_memory),
                 ]
             ).encode()
         ).hexdigest()
@@ -156,6 +184,8 @@ class TaskManager:
             raise ValueError("请先在设置中配置 DeepSeek API 密钥")
         if permission not in {"read", "workspace", "full"}:
             raise ValueError("未知权限等级")
+        if allow_memory and permission == "read":
+            raise ValueError("允许保存记忆还需要工作区权限")
         if server_id and not self.store.one(
             "SELECT id FROM records WHERE id=? AND kind='server'", (server_id,)
         ):
@@ -163,6 +193,10 @@ class TaskManager:
         cid = conversation_id or self.conversation(task[:40])
         if not self.store.one("SELECT id FROM conversations WHERE id=?", (cid,)):
             raise ValueError("对话不存在")
+        if self.store.one("SELECT archived FROM conversations WHERE id=?", (cid,))[
+            "archived"
+        ]:
+            raise ValueError("此对话已归档，请先恢复或开启新对话")
         active = self.store.one(
             "SELECT id FROM runs WHERE conversation_id=? AND status IN ('queued','running','cancelling')",
             (cid,),
@@ -171,7 +205,7 @@ class TaskManager:
             raise ValueError("此对话已有运行中的任务，请等待或取消")
         ident = uid()
         self.store.execute(
-            "INSERT INTO runs(id,conversation_id,task,status,permission,server_id,max_calls,max_seconds,created,updated,request_key,request_signature) VALUES(?,?,?,'queued',?,?,?,?,?,?,?,?)",
+            "INSERT INTO runs(id,conversation_id,task,status,permission,server_id,max_calls,max_seconds,created,updated,request_key,request_signature,allow_memory) VALUES(?,?,?,'queued',?,?,?,?,?,?,?,?,?)",
             (
                 ident,
                 cid,
@@ -184,6 +218,7 @@ class TaskManager:
                 now(),
                 request_key,
                 signature,
+                int(allow_memory),
             ),
         )
         self.store.message(cid, "user", task)
@@ -193,6 +228,12 @@ class TaskManager:
         flag = threading.Event()
         self.cancellations[ident] = flag
         self.tasks[ident] = asyncio.create_task(self._run(ident, flag, operation))
+
+        def completed(_):
+            self.tasks.pop(ident, None)
+            self.cancellations.pop(ident, None)
+
+        self.tasks[ident].add_done_callback(completed)
         return self.store.one("SELECT * FROM runs WHERE id=?", (ident,))
 
     def cancel(self, ident):
@@ -241,9 +282,9 @@ class TaskManager:
             return self.library.search(query)
 
         @tools.register()
-        def read_document(file_id: str):
-            """Read extracted text from a private document by id."""
-            return self.library.read(file_id)
+        def read_document(file_id: str, offset: int = 0, limit: int = 12000):
+            """Read one page of private document text. Follow next_offset until null to read the full document."""
+            return self.library.read(file_id, offset, limit)
 
         @tools.register()
         def list_files(path: str = "."):
@@ -419,6 +460,8 @@ class TaskManager:
         def remember(content: str, category: str = "preference"):
             """Save an explicitly requested owner preference or fact; requires workspace permission."""
             policy.require("workspace")
+            if not run.get("allow_memory"):
+                raise PermissionError("主人没有为本轮开启保存记忆")
             if not content.strip() or len(content) > 1000:
                 raise ValueError("记忆内容为空或过长")
             self.store.execute(
@@ -518,7 +561,10 @@ class TaskManager:
                             self.store.event(
                                 ident,
                                 "tool.started",
-                                {"name": name, "arguments": safe_summary(arguments)},
+                                {
+                                    "name": name,
+                                    "arguments": self.redact(encode(arguments)),
+                                },
                             )
                             return name, arguments
 
@@ -526,7 +572,11 @@ class TaskManager:
                             self.store.event(
                                 ident,
                                 "tool.completed",
-                                {"name": name, "result": safe_summary(result)},
+                                {
+                                    "name": name,
+                                    "result": self.redact(result),
+                                    "ok": name not in tools.tools_executor.unresolved,
+                                },
                             )
                             return name, arguments, result
 
@@ -546,6 +596,9 @@ class TaskManager:
                             + encode(matches)
                             + "。主人记忆="
                             + encode(memories)
+                            + "。本轮保存记忆授权="
+                            + str(bool(run.get("allow_memory")))
+                            + "，未开启时不可调用 remember，请主人从界面为下一轮开启。"
                         )
                         agent = Agent(
                             llm=gateway,
@@ -591,7 +644,7 @@ class TaskManager:
             flag.set()
             status, error = "failed", "任务超过时间预算，已停止本地受管执行。"
         except Exception as exc:
-            error = safe_summary(str(exc))
+            error = self.redact(str(exc))
         finally:
             if flag.is_set():
                 if tools:
@@ -599,6 +652,13 @@ class TaskManager:
                 if pending_operation:
                     pending_operation.cancel()
                     await asyncio.gather(pending_operation, return_exceptions=True)
+            # A queued cancellation is persisted before the coroutine wakes.
+            # Do not emit its terminal event twice if it was waiting for a slot.
+            current = self.store.one("SELECT status FROM runs WHERE id=?", (ident,))
+            if current and current["status"] == "cancelled":
+                self.tasks.pop(ident, None)
+                self.cancellations.pop(ident, None)
+                return
             if text:
                 self.store.message(
                     self.store.one(

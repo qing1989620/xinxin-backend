@@ -1,0 +1,12 @@
+{
+  "model": "deepseek-flash",
+  "status": "completed",
+  "usage": {
+    "calls": 2,
+    "total_tokens": 4713,
+    "prompt_tokens_last": 2405,
+    "completion_tokens_last": 43
+  },
+  "artifact_count": 1,
+  "error": ""
+}

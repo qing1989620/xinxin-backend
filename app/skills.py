@@ -148,8 +148,17 @@ class SkillRouter:
             return [
                 {
                     "id": s.name,
-                    "name": next((b[1] for b in BUILTINS if b[0] == s.name), s.name),
-                    "description": s.description,
+                    "name": next(
+                        (b[1] for b in BUILTINS if b[0] == s.name),
+                        {
+                            "scene-distillation-zine-v1-3": "拾景 · 影像蒸馏",
+                            "scenes-gathered-zine-v1-3": "拾景 · 实景拼贴",
+                        }.get(s.name, s.name),
+                    ),
+                    "description": {
+                        "scene-distillation-zine-v1-3": "从照片提炼情绪、形状和色彩，以源自原图的插画重新构成留白充足的独立海报。",
+                        "scenes-gathered-zine-v1-3": "保留真实照片，结合撕纸边缘、简化插画和纸张质感，制作安静的实景拼贴海报。",
+                    }.get(s.name, s.description),
                     "domain": s.domain,
                     "tools": self.tools[s.name],
                     "relations": s.relations,
@@ -176,7 +185,7 @@ class SkillRouter:
             if self.bandit.n_updates:
                 fused = sorted(
                     [
-                        (name, score + 0.1 * self.bandit.score(query, name)[1])
+                        (name, score + 0.1 * self.bandit.score(query, name)[0])
                         for name, score in fused
                     ],
                     key=lambda item: -item[1],

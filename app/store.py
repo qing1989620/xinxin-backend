@@ -63,6 +63,23 @@ class Store:
                 "UPDATE runs SET status='interrupted',error='服务重启，任务已中断；未自动重跑。',updated=? WHERE status IN ('queued','running','cancelling')",
                 (now(),),
             )
+            if "allow_memory" not in {
+                row["name"] for row in db.execute("PRAGMA table_info(runs)")
+            }:
+                db.execute(
+                    "ALTER TABLE runs ADD COLUMN allow_memory INTEGER NOT NULL DEFAULT 0"
+                )
+            if "archived" not in {
+                row["name"] for row in db.execute("PRAGMA table_info(conversations)")
+            }:
+                db.execute(
+                    "ALTER TABLE conversations ADD COLUMN archived INTEGER NOT NULL DEFAULT 0"
+                )
+            # Expired occurrences belong to the downtime, not to this startup.
+            db.execute(
+                "UPDATE schedules SET next_at=?+interval_minutes*60000 WHERE next_at<=?",
+                (now(), now()),
+            )
 
     @contextmanager
     def connect(self):

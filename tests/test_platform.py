@@ -36,6 +36,7 @@ def test_initialization_is_private_and_single_owner(tmp_path):
         assert client.get("/api/v1/auth/status").json() == {
             "configured": False,
             "registration": "disabled",
+            "email_enabled": False,
         }
         assert client.get("/api/v1/files").status_code == 401
         assert (
@@ -393,7 +394,9 @@ def test_managed_process_cancel_prevents_late_side_effect(tmp_path):
 
 def test_restart_preserves_history_and_marks_inflight_interrupted(client):
     store = client.app.state.store
-    store.execute("INSERT INTO conversations VALUES('c','test',1,1)")
+    store.execute(
+        "INSERT INTO conversations(id,title,created,updated) VALUES('c','test',1,1)"
+    )
     store.execute(
         "INSERT INTO runs(id,conversation_id,task,status,permission,max_calls,max_seconds,created,updated) VALUES('r','c','task','running','read',2,30,1,1)"
     )
@@ -590,3 +593,223 @@ def test_myself_migration_is_readonly_idempotent_and_skips_credentials(tmp_path)
 
 def encode_for_test(value):
     return json.dumps(value, ensure_ascii=False)
+
+
+@pytest.mark.parametrize("inherit_output", [True, False])
+def test_short_parent_cannot_release_child_outside_command_budget(
+    tmp_path, inherit_output
+):
+    import subprocess
+    import psutil
+
+    late = tmp_path / "escaped.txt"
+    child = "import time;from pathlib import Path;time.sleep(3);Path('escaped.txt').write_text('bad')"
+    parent = (
+        "import subprocess,sys; p=subprocess.Popen([sys.executable,'-c',"
+        + repr(child)
+        + "]"
+        + (
+            ""
+            if inherit_output
+            else ",stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL"
+        )
+        + ");print(p.pid,flush=True)"
+    )
+    started = time.monotonic()
+    result = execute_process(
+        [sys.executable, "-c", parent], tmp_path, threading.Event(), 0.3
+    )
+    assert time.monotonic() - started < 2, result
+    assert result["stopped"] == "timeout" and not result["ok"], result
+    assert not late.exists()
+    pid = int(result["output"].strip())
+    try:
+        assert psutil.Process(pid).status() == psutil.STATUS_ZOMBIE
+    except psutil.NoSuchProcess:
+        pass
+
+
+def test_validation_errors_never_echo_credentials(client):
+    for path, payload, secret in [
+        ("/settings", {"model_api_key": "LOCAL-SECRET-" * 100}, "LOCAL-SECRET"),
+        ("/settings", {"image_api_key": "not-ascii\nsecret-value"}, "secret-value"),
+        (
+            "/servers",
+            {"name": "node", "host": "example.org", "private_key": "PRIVATE-" * 3000},
+            "PRIVATE-",
+        ),
+    ]:
+        result = (
+            client.put("/api/v1" + path, json=payload)
+            if path == "/settings"
+            else client.post("/api/v1" + path, json=payload)
+        )
+        assert result.status_code == 422
+        assert secret not in result.text and "input" not in result.text
+
+
+def test_provider_exception_redacts_known_nonstandard_key(client):
+    key = "compatible-provider-credential"
+    client.put("/api/v1/settings", json={"model_api_key": key})
+
+    def provider(request):
+        raise RuntimeError("invalid header " + key)
+
+    client.app.state.manager.model_transport = httpx.MockTransport(provider)
+    run = client.post(
+        "/api/v1/runs", json={"task": "分析", "request_key": "error-redaction"}
+    ).json()
+    detail = wait_run(client, run["id"])
+    assert detail["status"] == "failed" and key not in json.dumps(detail)
+    assert key not in client.get(f"/api/v1/runs/{run['id']}/events").text
+
+
+def test_restart_skips_expired_automation(client):
+    from app.store import Store, now
+
+    store = client.app.state.store
+    store.execute(
+        "INSERT INTO schedules(id,title,task,interval_minutes,next_at,enabled,permission) VALUES('expired','test','task',60,1,1,'full')"
+    )
+    Store(store.directory)
+    assert (
+        store.one("SELECT next_at FROM schedules WHERE id='expired'")["next_at"] > now()
+    )
+
+
+def test_memory_requires_explicit_task_grant(client):
+    manager = client.app.state.manager
+    run = {
+        "id": "memory-test",
+        "conversation_id": "memory-test",
+        "permission": "workspace",
+        "server_id": None,
+    }
+    tool = manager._tools(run, threading.Event()).get_tool("remember")
+    with pytest.raises(PermissionError):
+        tool("unsolicited fact")
+    run["allow_memory"] = True
+    manager._tools(run, threading.Event()).get_tool("remember")(
+        "explicitly requested fact"
+    )
+    assert len(client.get("/api/v1/memories").json()) == 1
+
+
+def test_document_tail_is_searchable_and_readable(client):
+    text = "a" * 70000 + " unique_document_tail_marker"
+    file = client.post(
+        "/api/v1/files", files={"file": ("long.txt", text.encode(), "text/plain")}
+    ).json()
+    assert (
+        client.get("/api/v1/files/search?q=unique_document_tail_marker").json()[0][
+            "file_id"
+        ]
+        == file["id"]
+    )
+    first = client.get(f"/api/v1/files/{file['id']}/text").json()
+    assert first["next_offset"] and first["total_chars"] == len(text)
+    assert (
+        "unique_document_tail_marker"
+        in client.get(f"/api/v1/files/{file['id']}/text?offset=70000").json()["text"]
+    )
+
+
+def test_skill_routing_includes_ucb_exploration(client, monkeypatch):
+    router = client.app.state.router
+    router.bandit.n_updates = 1
+    monkeypatch.setattr(
+        router.bandit,
+        "score",
+        lambda task, name: (10000, 0, 10000) if name == "owner-memory" else (0, 0, 0),
+    )
+    assert router.search("写代码并记住主人的偏好")["skills"][0]["id"] == "owner-memory"
+
+
+def test_archiving_keeps_conversation_history_and_can_restore(client):
+    cid = client.post("/api/v1/conversations", json={"title": "history"}).json()["id"]
+    client.app.state.store.message(cid, "user", "Preserve this history")
+    assert (
+        client.put(
+            "/api/v1/conversations/" + cid, json={"title": "renamed"}
+        ).status_code
+        == 200
+    )
+    assert client.delete("/api/v1/conversations/" + cid).status_code == 200
+    assert not client.get("/api/v1/conversations").json()
+    assert client.get("/api/v1/conversations?archived=true").json()[0]["id"] == cid
+    assert (
+        client.get("/api/v1/conversations/" + cid).json()["messages"][0]["content"]
+        == "Preserve this history"
+    )
+    assert client.post("/api/v1/conversations/" + cid + "/restore").status_code == 200
+    assert client.get("/api/v1/conversations").json()[0]["title"] == "renamed"
+    assert len(client.get("/api/v1/dashboard").json()["daily_activity"]) == 7
+
+
+@pytest.mark.parametrize("wake_before_cancel", [False, True])
+def test_queued_cancellation_is_single_terminal_event_and_cleans_maps(
+    tmp_path, wake_before_cancel
+):
+    async def scenario():
+        manager = create_app(Config(tmp_path, "local-code")).state.manager
+
+        async def hold(*_):
+            await asyncio.Event().wait()
+
+        first = await manager.submit("hold", operation=hold)
+        await asyncio.sleep(0.02)
+        queued = await manager.submit("queued", operation=hold)
+        if wake_before_cancel:
+            await asyncio.sleep(0.02)
+        manager.cancel(queued["id"])
+        await asyncio.sleep(0.02)
+        assert (
+            manager.store.one("SELECT status FROM runs WHERE id=?", (queued["id"],))[
+                "status"
+            ]
+            == "cancelled"
+        )
+        assert (
+            len(
+                [
+                    e
+                    for e in manager.store.events(queued["id"])
+                    if e["kind"] == "finished"
+                ]
+            )
+            == 1
+        )
+        assert (
+            queued["id"] not in manager.tasks
+            and queued["id"] not in manager.cancellations
+        )
+        await manager.close()
+
+    asyncio.run(scenario())
+
+
+def test_fast_output_over_limit_is_not_success(tmp_path):
+    result = execute_process(
+        [
+            sys.executable,
+            "-c",
+            "import sys; sys.stdout.write('x'*70000);sys.stdout.flush()",
+        ],
+        tmp_path,
+        threading.Event(),
+        timeout=3,
+    )
+    assert (
+        not result["ok"]
+        and result["stopped"] == "output_limit"
+        and len(result["output"]) == 65536
+    )
+
+
+def test_gallery_reference_matches_allowlisted_assets(client):
+    cards = client.get("/api/v1/tools/gallery").json()
+    assert len(cards) == 95
+    card = next(row for row in cards if row["has_code"])
+    detail = client.get("/api/v1/tools/gallery/" + card["id"] + "/reference").json()
+    assert detail["code"] and detail["markdown"] and detail["id"] == card["id"]
+    assert client.get("/api/v1/tools/gallery/unknown/reference").status_code == 404

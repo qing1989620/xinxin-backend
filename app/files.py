@@ -107,11 +107,11 @@ class FileLibrary:
 
     def search(self, query, k=5):
         rows = self.store.all(
-            "SELECT id,name,text FROM files WHERE text!='' ORDER BY created DESC LIMIT 300"
+            "SELECT id,name,text FROM files WHERE text!='' ORDER BY created DESC"
         )
         chunks = []
         for row in rows:
-            text = row["text"][:60000]
+            text = row["text"]
             for offset in range(0, len(text), 900):
                 chunks.append(
                     {
@@ -132,11 +132,21 @@ class FileLibrary:
             for i, score in index.search(query, top_k=k)
         ]
 
-    def read(self, ident):
+    def read(self, ident, offset=0, limit=12000):
+        if offset < 0 or not 1 <= limit <= 16000:
+            raise ValueError("读取范围无效")
         row = self.store.one("SELECT name,text FROM files WHERE id=?", (ident,))
         if not row:
             raise ValueError("文件不存在")
-        return {"id": ident, "name": row["name"], "text": row["text"][:16000]}
+        end = min(offset + limit, len(row["text"]))
+        return {
+            "id": ident,
+            "name": row["name"],
+            "text": row["text"][offset:end],
+            "offset": offset,
+            "next_offset": end if end < len(row["text"]) else None,
+            "total_chars": len(row["text"]),
+        }
 
     def delete(self, ident):
         target = self.path(ident)

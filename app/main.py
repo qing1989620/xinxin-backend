@@ -20,6 +20,7 @@ from fastapi import (
     Query,
 )
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -29,6 +30,7 @@ from .config import Config, ROOT
 from .creative import gallery, plot_csv, transform_image
 from .files import FileLibrary, MAX_UPLOAD
 from .model import endpoint
+from .mail import MailCodes
 from .skills import SkillRouter
 from .store import Store, encode, now, uid
 
@@ -57,6 +59,34 @@ class Conversation(Input):
     title: str = Field(default="新对话", min_length=1, max_length=80)
 
 
+class EmailAddress(Input):
+    email: str = Field(
+        max_length=254,
+        pattern=r"^[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$",
+    )
+
+
+class EmailRequest(EmailAddress):
+    scene: Literal["login", "reset"] = "login"
+
+
+class EmailLogin(EmailAddress):
+    code: str = Field(pattern=r"^\d{6}$")
+
+
+class EmailReset(EmailLogin):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=False)
+    password: str = Field(min_length=10, max_length=256)
+
+
+class EmailSettings(EmailAddress):
+    smtp_host: str = Field(default="smtp.qq.com", pattern=r"^[A-Za-z0-9.-]{1,200}$")
+    smtp_port: int = Field(default=465, ge=1, le=65535)
+    smtp_mode: Literal["ssl", "starttls"] = "ssl"
+    smtp_username: str = Field(default="", max_length=254, pattern=r"^[\x21-\x7e]*$")
+    smtp_password: str = Field(default="", max_length=500, pattern=r"^[\x21-\x7e]*$")
+
+
 class RunInput(Input):
     task: str = Field(min_length=1, max_length=12000)
     conversation_id: str | None = None
@@ -66,6 +96,7 @@ class RunInput(Input):
     max_seconds: int = Field(default=300, ge=10, le=1800)
     request_key: str = Field(min_length=8, max_length=100)
     file_ids: list[str] = Field(default_factory=list, max_length=10)
+    allow_memory: bool = False
 
 
 class Record(Input):
@@ -86,10 +117,14 @@ class Server(Input):
 class Settings(Input):
     model: str | None = Field(default=None, max_length=120)
     model_url: str | None = Field(default=None, max_length=500)
-    model_api_key: str | None = Field(default=None, max_length=500)
+    model_api_key: str | None = Field(
+        default=None, max_length=500, pattern=r"^[\x21-\x7e]*$"
+    )
     image_url: str | None = Field(default=None, max_length=500)
     image_model: str | None = Field(default=None, max_length=120)
-    image_api_key: str | None = Field(default=None, max_length=500)
+    image_api_key: str | None = Field(
+        default=None, max_length=500, pattern=r"^[\x21-\x7e]*$"
+    )
 
 
 class Memory(Input):
@@ -132,6 +167,7 @@ def create_app(config=None):
     config = config or Config.from_env()
     store = Store(config.data_dir)
     auth = Auth(store)
+    mail = MailCodes(store, auth)
     library = FileLibrary(store)
     router = SkillRouter(store)
     manager = TaskManager(store, auth, config, library, router)
@@ -175,6 +211,7 @@ def create_app(config=None):
     app = FastAPI(title="Xinxin Private Agent", version="0.1.0", lifespan=lifespan)
     app.state.store, app.state.auth, app.state.manager = store, auth, manager
     app.state.library, app.state.router, app.state.config = library, router, config
+    app.state.mail = mail
     app.add_middleware(
         CORSMiddleware,
         allow_origins=list(config.origins),
@@ -207,6 +244,25 @@ def create_app(config=None):
 
         return JSONResponse(status_code=400, content={"detail": str(exc)})
 
+    @app.exception_handler(RequestValidationError)
+    async def validation_error(request, exc):
+        from fastapi.responses import JSONResponse
+
+        # Pydantic's default input/context can echo passwords and private keys.
+        return JSONResponse(
+            status_code=422,
+            content={
+                "detail": [
+                    {
+                        "loc": list(error["loc"]),
+                        "type": error["type"],
+                        "msg": "字段格式或长度不符合要求",
+                    }
+                    for error in exc.errors()
+                ]
+            },
+        )
+
     @app.get("/health")
     def health():
         return {"status": "ok", "product": "Xinxin", "version": "0.1.0"}
@@ -216,6 +272,7 @@ def create_app(config=None):
         return {
             "configured": bool(store.one("SELECT id FROM owner")),
             "registration": "disabled",
+            "email_enabled": mail.enabled(),
         }
 
     @app.post("/api/v1/auth/setup")
@@ -240,6 +297,66 @@ def create_app(config=None):
             body.name, body.password, request.client.host if request.client else "local"
         )
         return {"token": token, "name": body.name}
+
+    @app.post("/api/v1/auth/email/code")
+    def email_code(body: EmailRequest, request: Request):
+        return mail.send(
+            body.email.strip().lower(),
+            body.scene,
+            request.client.host if request.client else "local",
+        )
+
+    @app.post("/api/v1/auth/email/login")
+    def email_login(body: EmailLogin):
+        mail.consume(body.email.strip().lower(), "login", body.code, lambda db: None)
+        store.audit("owner.email_login", {})
+        return {
+            "token": auth.issue(),
+            "name": store.one("SELECT name FROM owner WHERE id=1")["name"],
+        }
+
+    @app.post("/api/v1/auth/email/reset")
+    def email_reset(body: EmailReset):
+        def update(db):
+            db.execute(
+                "UPDATE owner SET password=? WHERE id=1",
+                (password_hash(body.password),),
+            )
+            db.execute("DELETE FROM sessions")
+            db.execute("UPDATE email_codes SET used=1")
+
+        mail.consume(body.email.strip().lower(), "reset", body.code, update)
+        store.audit("owner.password_reset", {})
+        return {
+            "token": auth.issue(),
+            "name": store.one("SELECT name FROM owner WHERE id=1")["name"],
+        }
+
+    @app.get("/api/v1/settings/email", dependencies=[Depends(owner)])
+    def email_settings():
+        return {
+            "email": auth.secret("owner_email"),
+            "smtp_host": store.setting("smtp_host", "smtp.qq.com"),
+            "smtp_port": store.setting("smtp_port", 465),
+            "smtp_mode": store.setting("smtp_mode", "ssl"),
+            "smtp_username": auth.secret("smtp_username", auth.secret("owner_email")),
+            "configured": bool(auth.secret("smtp_password")),
+        }
+
+    @app.put("/api/v1/settings/email", dependencies=[Depends(owner)])
+    def save_email_settings(body: EmailSettings):
+        with store.connect() as db:
+            db.execute("UPDATE email_codes SET used=1")
+        auth.set_secret("owner_email", body.email.strip().lower())
+        auth.set_secret(
+            "smtp_username", body.smtp_username or body.email.strip().lower()
+        )
+        if body.smtp_password:
+            auth.set_secret("smtp_password", body.smtp_password)
+        for key in ("smtp_host", "smtp_port", "smtp_mode"):
+            store.set_setting(key, getattr(body, key))
+        store.audit("email.configured", {})
+        return email_settings()
 
     @app.get("/api/v1/auth/me", dependencies=[Depends(owner)])
     def me():
@@ -273,7 +390,33 @@ def create_app(config=None):
             for row in store.all("SELECT kind,COUNT(*) n FROM records GROUP BY kind")
         }
         counts["files"] = store.one("SELECT COUNT(*) n FROM files")["n"]
+        today = (now() + 28800000) // 86400000
+        days = {
+            row["day"]: row
+            for row in store.all(
+                "SELECT CAST((created+28800000)/86400000 AS INTEGER) day,COUNT(*) total,SUM(status='completed') completed FROM runs WHERE created>=? GROUP BY day",
+                ((today - 6) * 86400000 - 28800000,),
+            )
+        }
         return {
+            "daily_activity": [
+                {
+                    "timestamp": day * 86400000 - 28800000,
+                    "total": days.get(day, {}).get("total", 0),
+                    "completed": days.get(day, {}).get("completed", 0),
+                }
+                for day in range(today - 6, today + 1)
+            ],
+            "task_counts": {
+                row["status"]: row["n"]
+                for row in store.all(
+                    "SELECT status,COUNT(*) n FROM runs GROUP BY status"
+                )
+            },
+            "servers": counts.get("server", 0),
+            "automations": store.one(
+                "SELECT COUNT(*) n FROM schedules WHERE enabled=1"
+            )["n"],
             "counts": counts,
             "tasks": store.all("SELECT * FROM runs ORDER BY created DESC LIMIT 5"),
             "recent_files": [
@@ -291,8 +434,11 @@ def create_app(config=None):
         }
 
     @app.get("/api/v1/conversations", dependencies=[Depends(owner)])
-    def conversations():
-        return store.all("SELECT * FROM conversations ORDER BY updated DESC LIMIT 200")
+    def conversations(archived: bool = False):
+        return store.all(
+            "SELECT * FROM conversations WHERE archived=? ORDER BY updated DESC LIMIT 200",
+            (int(archived),),
+        )
 
     @app.post("/api/v1/conversations", dependencies=[Depends(owner)])
     def new_conversation(body: Conversation):
@@ -321,10 +467,27 @@ def create_app(config=None):
             (ident,),
         ):
             raise HTTPException(409, "请先停止此对话的运行任务")
-        with store.connect() as db:
-            db.execute("DELETE FROM messages WHERE conversation_id=?", (ident,))
-            db.execute("DELETE FROM conversations WHERE id=?", (ident,))
+        store.execute(
+            "UPDATE conversations SET archived=1,updated=? WHERE id=?", (now(), ident)
+        )
         return {"ok": True}
+
+    @app.put("/api/v1/conversations/{ident}", dependencies=[Depends(owner)])
+    def rename_conversation(ident: str, body: Conversation):
+        require_row("conversations", ident)
+        store.execute(
+            "UPDATE conversations SET title=?,updated=? WHERE id=?",
+            (body.title, now(), ident),
+        )
+        return require_row("conversations", ident)
+
+    @app.post("/api/v1/conversations/{ident}/restore", dependencies=[Depends(owner)])
+    def restore_conversation(ident: str):
+        require_row("conversations", ident)
+        store.execute(
+            "UPDATE conversations SET archived=0,updated=? WHERE id=?", (now(), ident)
+        )
+        return require_row("conversations", ident)
 
     @app.get("/api/v1/runs", dependencies=[Depends(owner)])
     def runs(limit: int = Query(default=100, ge=1, le=200)):
@@ -346,6 +509,7 @@ def create_app(config=None):
             body.max_calls,
             body.max_seconds,
             body.request_key,
+            allow_memory=body.allow_memory,
         )
 
     @app.get("/api/v1/runs/{ident}", dependencies=[Depends(owner)])
@@ -359,7 +523,7 @@ def create_app(config=None):
         }
 
     @app.post("/api/v1/runs/{ident}/cancel", dependencies=[Depends(owner)])
-    def cancel(ident: str):
+    async def cancel(ident: str):
         return manager.cancel(ident)
 
     @app.get("/api/v1/runs/{ident}/events", dependencies=[Depends(owner)])
@@ -430,6 +594,7 @@ def create_app(config=None):
         }
         if name not in selected or not any(
             event["kind"] == "tool.completed"
+            and event["data"].get("ok") is True
             and event["data"].get("name") in router.tools.get(name, [])
             for event in evidence
         ):
@@ -531,8 +696,12 @@ def create_app(config=None):
         return library.search(q)
 
     @app.get("/api/v1/files/{ident}/text", dependencies=[Depends(owner)])
-    def file_text(ident: str):
-        return library.read(ident)
+    def file_text(
+        ident: str,
+        offset: int = Query(default=0, ge=0),
+        limit: int = Query(default=12000, ge=1, le=16000),
+    ):
+        return library.read(ident, offset, limit)
 
     @app.get("/api/v1/files/{ident}/metadata", dependencies=[Depends(owner)])
     def file_metadata(ident: str):
@@ -715,6 +884,21 @@ def create_app(config=None):
             headers={"Cache-Control": "private, max-age=3600"},
         )
 
+    @app.get("/api/v1/tools/gallery/{name}/reference", dependencies=[Depends(owner)])
+    def gallery_reference(name: str):
+        card = next((row for row in gallery() if row["id"] == name), None)
+        if not card:
+            raise HTTPException(404, "样例不存在")
+        folder = ROOT / "resources/plot/gallery"
+        code = folder / (name + ".py")
+        return {
+            **card,
+            "markdown": (folder / (name + ".md")).read_text(encoding="utf-8"),
+            "code": code.read_text(encoding="utf-8") if code.is_file() else None,
+            "source": "liouhai/plot-is-all-you-need",
+            "license": "说明与脚本 MIT；图像的原始权利归各自作者，见 THIRD_PARTY.md",
+        }
+
     @app.post("/api/v1/tools/plot", dependencies=[Depends(owner)])
     async def make_plot(body: Plot):
         library.path(body.file_id)
@@ -794,13 +978,13 @@ def create_app(config=None):
 
     @app.put("/api/v1/schedules/{ident}", dependencies=[Depends(owner)])
     def update_schedule(ident: str, body: Schedule):
-        require_row("schedules", ident)
+        previous = require_row("schedules", ident)
         if body.server_id:
             server = require_row("records", body.server_id)
             if server["kind"] != "server":
                 raise ValueError("目标服务器不存在")
         store.execute(
-            "UPDATE schedules SET title=?,task=?,interval_minutes=?,enabled=?,permission=?,server_id=? WHERE id=?",
+            "UPDATE schedules SET title=?,task=?,interval_minutes=?,enabled=?,permission=?,server_id=?,next_at=? WHERE id=?",
             (
                 body.title,
                 body.task,
@@ -808,6 +992,14 @@ def create_app(config=None):
                 int(body.enabled),
                 body.permission,
                 body.server_id,
+                (
+                    now() + body.interval_minutes * 60000
+                    if (
+                        body.interval_minutes != previous["interval_minutes"]
+                        or (body.enabled and not previous["enabled"])
+                    )
+                    else previous["next_at"]
+                ),
                 ident,
             ),
         )

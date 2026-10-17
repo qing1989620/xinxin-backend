@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import re
+import select
 import shlex
 import shutil
 import signal
@@ -36,24 +37,32 @@ class Policy:
         return path
 
 
-def stop_process(process):
-    if process.poll() is not None:
-        return
-    if os.name == "nt":
+def stop_process(process, scope=None):
+    if scope:
+        scope.stop()
+    elif os.name != "nt":
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+    elif process.poll() is None:
         subprocess.run(
             ["taskkill", "/PID", str(process.pid), "/T", "/F"],
             capture_output=True,
             timeout=8,
         )
-    else:
-        try:
-            os.killpg(process.pid, signal.SIGKILL)
-        except ProcessLookupError:
-            pass
     try:
         process.wait(timeout=5)
     except subprocess.TimeoutExpired:
         process.kill()
+
+
+def process_group_active(pid):
+    try:
+        os.killpg(pid, 0)
+        return True
+    except ProcessLookupError:
+        return False
 
 
 def execute_process(command, cwd, cancelled, timeout=90):
@@ -73,6 +82,11 @@ def execute_process(command, cwd, cancelled, timeout=90):
             "COMSPEC",
         }
     }
+    scope = None
+    if os.name == "nt":
+        from .windows_job import WindowsJob, pipe_ready
+
+        scope = WindowsJob()
     process = subprocess.Popen(
         command,
         cwd=str(cwd),
@@ -80,35 +94,61 @@ def execute_process(command, cwd, cancelled, timeout=90):
         stderr=subprocess.STDOUT,
         env=env,
         start_new_session=os.name != "nt",
-        creationflags=subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0,
+        creationflags=(
+            (subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW | 0x4)
+            if os.name == "nt"
+            else 0
+        ),
     )
-    parts, total, over_limit = [], [0], threading.Event()
+    try:
+        if scope:
+            scope.start(process)
+    except BaseException:
+        process.kill()
+        scope.close()
+        process.stdout.close()
+        raise
+    parts, total, over_limit = [], 0, False
 
-    def consume():
-        while block := process.stdout.read(4096):
-            available = max(0, 65536 - total[0])
+    def consume_available():
+        nonlocal total, over_limit
+        ready = lambda: (
+            pipe_ready(process.stdout)
+            if scope
+            else bool(select.select([process.stdout], [], [], 0)[0])
+        )
+        while ready():
+            block = os.read(process.stdout.fileno(), 4096)
+            if not block:
+                break
+            available = max(0, 65536 - total)
             parts.append(block[:available])
-            total[0] += len(block)
-            if total[0] > 65536:
-                over_limit.set()
+            total += len(block)
+            if total > 65536:
+                over_limit = True
                 break
 
-    reader = threading.Thread(target=consume, daemon=True)
-    reader.start()
     deadline = time.monotonic() + timeout
     reason = ""
     try:
-        while process.poll() is None:
-            if cancelled.is_set() or time.monotonic() > deadline or over_limit.is_set():
+        while True:
+            consume_available()
+            parent_done = process.poll() is not None
+            descendants = scope.active() if scope else process_group_active(process.pid)
+            if cancelled.is_set() or time.monotonic() > deadline or over_limit:
                 reason = (
                     "cancelled"
                     if cancelled.is_set()
-                    else "output_limit" if over_limit.is_set() else "timeout"
+                    else "output_limit" if over_limit else "timeout"
                 )
-                stop_process(process)
+                stop_process(process, scope)
+                break
+            if parent_done and not descendants:
                 break
             time.sleep(0.04)
-        reader.join(timeout=2)
+        consume_available()
+        if over_limit and not reason:
+            reason = "output_limit"
         return {
             "exit_code": process.returncode,
             "output": b"".join(parts).decode("utf-8", "replace"),
@@ -116,7 +156,9 @@ def execute_process(command, cwd, cancelled, timeout=90):
             "ok": process.returncode == 0 and not reason,
         }
     finally:
-        if process.poll() is None:
+        if scope:
+            scope.close()
+        else:
             stop_process(process)
         process.stdout.close()
 
