@@ -5,11 +5,33 @@ from __future__ import annotations
 import argparse
 from contextlib import closing
 from datetime import datetime, timezone
+import hashlib
 import os
 from pathlib import Path
 import sqlite3
 import tarfile
 import tempfile
+
+
+def file_checksum(path: Path) -> str:
+    with path.open("rb") as stream:
+        return hashlib.file_digest(stream, "sha256").hexdigest()
+
+
+def verify_archive(path: Path, expected: dict[str, tuple[int, str]]) -> None:
+    with tarfile.open(path, "r:gz") as archive:
+        members = archive.getmembers()
+        if len({item.name for item in members}) != len(members):
+            raise ValueError("Backup archive contains duplicate entries")
+        entries = {item.name: item for item in members}
+        for name, (size, checksum) in expected.items():
+            item = entries.get(name)
+            if not item or not item.isfile() or item.size != size:
+                raise ValueError("Backup archive is missing a required private resource")
+            with archive.extractfile(item) as stream:
+                actual = hashlib.file_digest(stream, "sha256").hexdigest()
+            if actual != checksum:
+                raise ValueError("Backup resource checksum does not match the database")
 
 
 def backup(source: Path, output: Path, keep: int = 7) -> Path:
@@ -33,6 +55,22 @@ def backup(source: Path, output: Path, keep: int = 7) -> Path:
                 db.backup(destination)
                 if destination.execute("PRAGMA integrity_check").fetchone()[0] != "ok":
                     raise ValueError("Database backup integrity check failed")
+                resources = list(destination.execute("SELECT id,path,size,sha256 FROM files"))
+        expected = {"data/xinxin.sqlite3": (snapshot.stat().st_size, file_checksum(snapshot))}
+        for name in ("vault.key", "bootstrap.code"):
+            private = source / name
+            if not private.is_file() or private.is_symlink():
+                raise ValueError("A required private vault or initialization file is missing")
+            expected["data/" + name] = (private.stat().st_size, file_checksum(private))
+        file_root = (source / "files").resolve()
+        for ident, path, size, checksum in resources:
+            resource = Path(path)
+            if resource.is_symlink():
+                raise ValueError("Registered resources must not be symbolic links")
+            resource = resource.resolve()
+            if not resource.is_relative_to(file_root) or resource.stem != ident:
+                raise ValueError("Registered resource escaped the private files directory")
+            expected["data/" + resource.relative_to(source).as_posix()] = (size, checksum)
         descriptor = os.open(incomplete, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
         try:
             with os.fdopen(descriptor, "wb") as raw, tarfile.open(fileobj=raw, mode="w:gz", dereference=False) as archive:
@@ -41,6 +79,9 @@ def backup(source: Path, output: Path, keep: int = 7) -> Path:
                     path = source / name
                     if path.exists():
                         archive.add(path, arcname="data/" + name)
+            # Validate actual archived bytes before publishing or pruning. A
+            # file deleted after the SQL snapshot must retain the last good backup.
+            verify_archive(incomplete, expected)
             incomplete.rename(target)
         finally:
             incomplete.unlink(missing_ok=True)
