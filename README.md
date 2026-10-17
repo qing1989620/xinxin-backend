@@ -17,6 +17,22 @@ Copy-Item .env.example .env
 
 仅运行一个 API 进程（不要配置多个 Uvicorn workers）。启动时把未完成任务标记中断，不自动重做副作用。事件可回放；定时任务停机期间不补跑。
 
+## 技能模型与 Xinxin
+
+技能保留与实际注册工具对应的小集合。SkillNet 的 BM25、领域标签、量化多语言 E5 语义向量融合，之后参与有工具证据的共享 LinUCB 反馈；真实依赖按拓扑顺序加载。初始权重沿用上游：dense 35/55/10，词法回退 70/20/10，不表示已在本项目证明最优。`GET /api/v1/skills/status` 需要登录，返回实际编码器和权重；搜索结果包含候选通路。没有自动 LLM 重排或研究检查点晋升。
+
+本地已安装固定 E5 模型。新安装可运行以下命令；文件按固定版本、长度与 SHA-256 校验，安装在忽略目录 `data/semantic-model/`，不进入 Git。不在搜索请求中下载模型：
+
+```powershell
+.venv/Scripts/python scripts/setup_semantic_model.py
+# 也可从已下载的 SkillNet 离线包安装，不联网：
+.venv/Scripts/python scripts/setup_semantic_model.py --bundle <multilingual-e5-small.zip>
+```
+
+重启后启用；默认 auto 模式缺模型/依赖时明确降级，`XINXIN_SKILL_ENCODER=dense` 则要求语义模型可用，否则启动失败；`lexical` 显式选择最轻的词法模式。E5 仅用于技能检索；对话大模型仍是远程 DeepSeek。CPU 编码 2 线程、每批 8 条、最多 256 tokens。
+
+Xinxin 的版本化人格在 `app/persona.py`：轻微傲娇、可爱亲近、认真办事。每轮系统消息包含人格、不可覆盖的执行契约和真实 OS/shell/工作区/权限上下文；人设不修改授权，也不假报完成。实际人格/本机命令验收见 `docs/persona-execution.json`。
+
 ## 权限
 
 | 等级 | 范围 |

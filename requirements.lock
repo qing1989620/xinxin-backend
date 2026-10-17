@@ -41,3 +41,16 @@ tzdata==2026.5
 uvicorn==0.54.0
 psutil==7.2.2
 pywin32==312; sys_platform == 'win32'
+# Local multilingual E5 CPU inference and tokenizer dependencies.
+onnxruntime==1.31.0
+tokenizers==0.23.3
+flatbuffers==25.12.19
+protobuf==7.36.2
+huggingface_hub==2.2.0
+filelock==4.2.0
+fsspec==2026.9.0
+hf-xet==1.7.0
+httpcore2==2.13.1
+httpx2==2.13.1
+tqdm==4.70.1
+truststore==0.10.5

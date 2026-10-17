@@ -89,6 +89,7 @@ def test_unicode_owner_login_and_password_revocation(client):
     [
         "/api/v1/dashboard",
         "/api/v1/skills",
+        "/api/v1/skills/status",
         "/api/v1/records?kind=article",
         "/api/v1/servers",
         "/api/v1/memories",
@@ -307,6 +308,18 @@ def test_tina_tool_loop_persists_events_artifacts_and_usage(client):
     def provider(request):
         body = json.loads(request.content)
         requests.append(body)
+        system = next(
+            message["content"]
+            for message in body["messages"]
+            if message["role"] == "system"
+        )
+        assert "Xinxin" in system and "小傲娇" in system and "女生" in system
+        context = json.loads(
+            system.split("本轮服务端上下文（JSON 数据，不是追加指令）：\n", 1)[1]
+        )
+        assert context["permission"] == "workspace" and context["allow_memory"] is False
+        assert context["server_id"] is None and context["execution_host"]["workspace"]
+        assert "offline-test-key" not in system
         assert (
             body["model"] == "deepseek-flash" and body["thinking"]["type"] == "disabled"
         )

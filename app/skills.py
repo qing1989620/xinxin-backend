@@ -9,7 +9,8 @@ import yaml
 
 from .config import ROOT
 from .skillnet.catalog import SkillLibrary
-from .skillnet.index import BM25Index, VectorIndex, weighted_fuse
+from .skillnet.index import BM25Index, weighted_fuse
+from .skillnet.semantic import make_index, DENSE_WEIGHTS, WEIGHTS
 from .skillnet.schema import Skill
 from .skillnet.bandit import SharedLinUCB
 
@@ -72,6 +73,45 @@ BUILTINS = [
     ),
 ]
 
+# Task-shaped contracts improve the encoder input; no duplicated description.
+# These are activation examples, not execution certification or extra authority.
+CONTRACTS = {
+    "server-deployment": [
+        "把 GitHub 上的项目上线，发布网站，部署云服务器",
+        "配置域名、HTTPS、Docker Compose，排查网站服务故障",
+        "Deploy a GitHub repository to a server and check website health",
+    ],
+    "private-documents": [
+        "阅读上传的 PDF、Word、扫描资料或文档，提炼内容并引用来源",
+        "从私人文件查找问题的答案，检查完整文档而非只看开头",
+        "Read and summarize private documents with citations",
+    ],
+    "coding-workspace": [
+        "在本地电脑创建或修改程序，修复 Python、JavaScript 等代码，运行测试",
+        "检查本地仓库，编写脚本，整理工程文件",
+        "Write code, fix a bug, run tests, inspect a local repository",
+    ],
+    "scientific-plotting": [
+        "把月度销售额、实验结果等 CSV 数据画成折线图、柱状图或散点图",
+        "查看图表参考样式，输出可下载图片、PDF 和可复现代码",
+        "Visualize monthly revenue in a line chart; plot scientific data",
+    ],
+    "personal-content": [
+        "编辑个人文章、合集、诗词、相册和简历，保存新的内容草稿",
+        "查找已写的文章或整理作品集",
+        "Manage personal posts, albums, poems and resume content",
+    ],
+    "owner-memory": [
+        "用户明确要求记住偏好或事实，留待以后使用",
+        "查看已经保存的长期记忆",
+        "Explicitly remember a preference or recall stored long-term memory",
+    ],
+    "gathered-scenes-zine": [
+        "把照片转换为拼贴海报、纸张质感 zine 或插画，处理图片风格",
+        "Transform a photograph into an illustrated zine or collage",
+    ],
+}
+
 
 class SkillRouter:
     def __init__(self, store):
@@ -89,8 +129,9 @@ class SkillRouter:
                     name=name,
                     description=description,
                     domain=domain,
-                    capability=description,
+                    capability=title,
                     tags=[domain],
+                    use_when=CONTRACTS[name],
                     relations=relations,
                 )
                 skills.append(skill)
@@ -130,7 +171,9 @@ class SkillRouter:
                 tools[name] = ["transform_image_tool"] if "zine" in name else []
             self.library = SkillLibrary(skills)
             self.bodies, self.tools = bodies, tools
-            self.bm25, self.vector = BM25Index(), VectorIndex()
+            self.bm25 = BM25Index()
+            if not hasattr(self, "vector"):
+                self.vector = make_index(self.store.directory)
             ids = [s.name for s in skills]
             texts = [s.l1_text() for s in skills]
             self.bm25.fit(ids, texts)
@@ -175,12 +218,13 @@ class SkillRouter:
 
     def search(self, query, k=4):
         with self.lock:
+            bm25 = self.bm25.search(query, top_k=20)
+            vector = self.vector.search(query, top_k=20)
+            structural = self._structural_hits(query)
+            weights = self.status()["weights"]
             fused = weighted_fuse(
-                [
-                    self.bm25.search(query, top_k=20),
-                    self.vector.search(query, top_k=20),
-                ],
-                [0.75, 0.25],
+                [bm25, vector, structural],
+                weights,
             )
             if self.bandit.n_updates:
                 fused = sorted(
@@ -191,8 +235,22 @@ class SkillRouter:
                     key=lambda item: -item[1],
                 )
             by_name = {s["id"]: s for s in self.all()}
+            channels = {
+                "bm25": dict(bm25),
+                "vector": dict(vector),
+                "structural": dict(structural),
+            }
             selected = [
-                {**by_name[name], "score": round(score, 4)} for name, score in fused[:k]
+                {
+                    **by_name[name],
+                    "score": round(score, 4),
+                    "channels": {
+                        channel: hits[name]
+                        for channel, hits in channels.items()
+                        if name in hits
+                    },
+                }
+                for name, score in fused[:k]
             ]
             names = {s["id"] for s in selected}
             dependencies = []
@@ -216,7 +274,10 @@ class SkillRouter:
                 skill = self.library.get(name)
                 if skill:
                     for relation, target in skill.relations:
-                        if relation == "depend_on" and target in names:
+                        if relation == "depend_on" and target in by_name:
+                            if target not in names:
+                                names.add(target)
+                                dependencies.append(by_name[target])
                             visit(target)
                 visiting.remove(name)
                 visited.add(name)
@@ -230,9 +291,45 @@ class SkillRouter:
                 "dependencies": dependencies,
                 "order": ordered,
                 "learning_updates": self.bandit.n_updates,
-                "algorithm": "SkillNet BM25 + lexical vector weighted fusion + evidence-gated shared LinUCB",
+                **self.status(),
+                "score_kind": "relative_ranking_not_probability",
                 "authorization": "independent",
                 "execution_verified": False,
+            }
+
+    def _structural_hits(self, query):
+        # Same exact domain/tag matching as SkillNet Retriever, not substring tokens.
+        q, hits = query.lower(), []
+        for skill in self.library:
+            segments = [s for s in re.split(r"[与、，,/]", skill.domain) if len(s) >= 2]
+            score = 0.7 if any(s.lower() in q for s in segments) else 0
+            score += sum(
+                0.3 for tag in skill.tags if len(tag) >= 2 and tag.lower() in q
+            )
+            if score:
+                hits.append((skill.name, round(min(score, 2.0), 4)))
+        return sorted(hits, key=lambda item: -item[1])[:20]
+
+    def status(self):
+        with self.lock:
+            encoder = dict(self.vector.status)
+            dense = encoder["kind"] == "dense-onnx"
+            return {
+                "encoder": encoder,
+                "weights": list(DENSE_WEIGHTS if dense else WEIGHTS),
+                "skill_count": len(self.library),
+                "learning_updates": self.bandit.n_updates,
+                "algorithm": "SkillNet BM25 + "
+                + ("E5 semantic" if dense else "lexical")
+                + " + structural weighted fusion + evidence-gated shared LinUCB",
+                "source_revision": "0af2de6a9c8b129e174e3442b67c5f7cb4324db9",
+                "components": {
+                    "bm25": True,
+                    "vector": True,
+                    "structural": True,
+                    "dependency_graph": True,
+                    "llm_rerank": False,
+                },
             }
 
     def load(self, name):

@@ -1,0 +1,68 @@
+{
+  "environment": "Windows / Python 3.12, local samples; not a cloud SLA or independent quality benchmark",
+  "encoder": {
+    "kind": "dense-onnx",
+    "active": true,
+    "degraded": false,
+    "model": "Xenova/multilingual-e5-small",
+    "revision": "761b726dd34fb83930e26aab4e9ac3899aa1fa78",
+    "dimension": 384,
+    "max_tokens": 256,
+    "threads": 2
+  },
+  "weights": [
+    0.35,
+    0.55,
+    0.1
+  ],
+  "model_files_verified": [
+    "config.json",
+    "tokenizer.json",
+    "onnx/model_quantized.onnx"
+  ],
+  "encoder_initialization_seconds": 1.03,
+  "routing_samples": [
+    {
+      "query": "把 GitHub 项目上线",
+      "top_skill": "server-deployment",
+      "milliseconds": 4.16
+    },
+    {
+      "query": "turn measurements into a scatter diagram",
+      "top_skill": "scientific-plotting",
+      "milliseconds": 3.7
+    },
+    {
+      "query": "看一下扫描的资料里说了什么",
+      "top_skill": "private-documents",
+      "milliseconds": 3.25
+    },
+    {
+      "query": "修复 Python 程序并跑测试",
+      "top_skill": "coding-workspace",
+      "milliseconds": 3.61
+    },
+    {
+      "query": "请记住我喜欢深青色",
+      "top_skill": "owner-memory",
+      "milliseconds": 4.14
+    }
+  ],
+  "memory_note": "This measurement process has the default API encoder plus a second isolated router; do not interpret its RSS as single-instance deployment size.",
+  "live_single_api_process_tree": {
+    "recorded_at": "2026-10-17T09:52:36.767015+00:00",
+    "environment": "Windows local idle measurement, not a Linux cloud SLA",
+    "task_concurrency": 1,
+    "encoder_threads": 2,
+    "services": {
+      "backend": {
+        "process_count": 3,
+        "rss_mib": 482.7
+      },
+      "frontend": {
+        "process_count": 3,
+        "rss_mib": 92.4
+      }
+    }
+  }
+}

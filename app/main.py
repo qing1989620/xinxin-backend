@@ -558,6 +558,10 @@ def create_app(config=None):
     def skills(q: str = Query(default="", max_length=2000)):
         return router.search(q) if q else router.all()
 
+    @app.get("/api/v1/skills/status", dependencies=[Depends(owner)])
+    def skill_status():
+        return router.status()
+
     @app.get("/api/v1/skills/{name}", dependencies=[Depends(owner)])
     def skill(name: str):
         return router.load(name)
