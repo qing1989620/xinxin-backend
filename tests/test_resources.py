@@ -22,6 +22,9 @@ def test_curated_resources_are_real_attributed_and_integrity_checked(tmp_path):
         for item in card["files"]:
             page = packages.read(card["id"], item["path"])
             assert page["sha256"] == item["sha256"]
+            import json
+
+            assert len(json.dumps(page, ensure_ascii=False)) < 16000
     ident = "gh-claude-docker-development-521176"
     for path in [
         "../catalog.json",

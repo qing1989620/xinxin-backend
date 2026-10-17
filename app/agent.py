@@ -171,12 +171,20 @@ class TaskManager:
                     "modelapikey",
                     "smtppassword",
                 }
-                return {
-                    key: "[redacted]"
-                    if key.lower().replace("_", "").replace("-", "") in secret_fields
-                    else redact_data(item)
-                    for key, item in data.items()
-                }
+                cleaned = {}
+                for key, item in data.items():
+                    clean_key = redact_text(key)
+                    suffix = 1
+                    while clean_key in cleaned:
+                        clean_key = f"{redact_text(key)} [{suffix}]"
+                        suffix += 1
+                    cleaned[clean_key] = (
+                        "[redacted]"
+                        if key.lower().replace("_", "").replace("-", "")
+                        in secret_fields
+                        else redact_data(item)
+                    )
+                return cleaned
             return data
 
         try:

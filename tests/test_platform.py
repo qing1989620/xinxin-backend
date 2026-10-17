@@ -371,6 +371,13 @@ def test_paginated_skill_reference_reaches_the_next_model_call_intact(client):
     )
     assert sanitized["next_offset"] == 6000 and sanitized["password"] == "[redacted]"
     assert "private-test-value" not in json.dumps(sanitized)
+    keys = json.loads(
+        client.app.state.manager.redact(
+            json.dumps({"nested": {"offline-page-key": "one", "[redacted]": "two"}})
+        )
+    )
+    assert "offline-page-key" not in json.dumps(keys)
+    assert set(keys["nested"].values()) == {"one", "two"}
 
 
 def test_tina_tool_loop_persists_events_artifacts_and_usage(client):
