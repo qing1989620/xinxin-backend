@@ -1628,6 +1628,25 @@
         "operationId": "upload_api_v1_files_post",
         "parameters": [
           {
+            "name": "x-upload-id",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "minLength": 8,
+                  "maxLength": 80,
+                  "pattern": "^[a-zA-Z0-9-]+$"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Upload-Id"
+            }
+          },
+          {
             "name": "authorization",
             "in": "header",
             "required": false,
