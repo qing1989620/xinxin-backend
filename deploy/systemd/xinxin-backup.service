@@ -3,7 +3,8 @@ Description=Xinxin private database and resource backup
 
 [Service]
 Type=oneshot
-User=root
+User=xinxin
+Group=xinxin
 UMask=0077
 ExecStart=/opt/xinxin/venv/bin/python /opt/xinxin/backend/scripts/backup_private_data.py --source /var/lib/xinxin --output /var/backups/xinxin --keep 7
 NoNewPrivileges=true
