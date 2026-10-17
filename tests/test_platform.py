@@ -813,3 +813,48 @@ def test_gallery_reference_matches_allowlisted_assets(client):
     detail = client.get("/api/v1/tools/gallery/" + card["id"] + "/reference").json()
     assert detail["code"] and detail["markdown"] and detail["id"] == card["id"]
     assert client.get("/api/v1/tools/gallery/unknown/reference").status_code == 404
+
+
+def test_secret_redaction_handles_serialized_multiline_keys_and_vault(client):
+    manager = client.app.state.manager
+    private_key = "-----BEGIN OPENSSH PRIVATE KEY-----\nsynthetic-private-material\n-----END OPENSSH PRIVATE KEY-----"
+    client.app.state.auth.set_secret("ssh:synthetic", private_key)
+    encoded = json.dumps({"output": private_key})
+    assert private_key not in json.loads(manager.redact(encoded))["output"]
+    client.app.state.store.event(
+        "synthetic-log", "tool.started", {"arguments": manager.redact(encoded)}
+    )
+    assert "synthetic-private-material" not in json.dumps(
+        client.app.state.store.events("synthetic-log")
+    )
+    vault = (client.app.state.store.directory / "vault.key").read_text().strip()
+    assert manager.redact(vault) == "[redacted]"
+
+
+def test_exported_plot_script_reproduces_the_actual_png(client, tmp_path):
+    import subprocess
+    from app.creative import plot_csv
+
+    csv = b"x,y\nA,12\nB,17\nC,9\n"
+    original = client.post(
+        "/api/v1/files", files={"file": ("original.csv", csv, "text/csv")}
+    ).json()
+    library = client.app.state.library
+    result = plot_csv(
+        library, original["id"], "x", "y", kind="bar", title="Reproducible figure"
+    )
+    code = next(row for row in result["files"] if row["name"].endswith(".py"))
+    png = next(row for row in result["files"] if row["name"].endswith(".png"))
+    script = tmp_path / "reproduce.py"
+    script.write_bytes(library.path(code["id"]).read_bytes())
+    (tmp_path / "original.csv").write_bytes(csv)
+    completed = subprocess.run(
+        [sys.executable, str(script), "original.csv"],
+        cwd=tmp_path,
+        capture_output=True,
+        timeout=20,
+    )
+    assert completed.returncode == 0, completed.stderr.decode("utf-8", "replace")
+    assert (tmp_path / "figure.png").read_bytes() == library.path(
+        png["id"]
+    ).read_bytes()

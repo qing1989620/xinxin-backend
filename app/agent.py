@@ -127,11 +127,25 @@ class TaskManager:
     def redact(self, value):
         text = str(value)
         keys = [self.config.api_key]
+        vault_key = self.store.directory / "vault.key"
+        if vault_key.is_file():
+            keys.append(vault_key.read_text(encoding="ascii").strip())
         for row in self.store.all("SELECT key FROM settings WHERE key LIKE 'secret:%'"):
             keys.append(self.auth.secret(row["key"][7:]))
         for key in keys:
             if key:
-                text = text.replace(key, "[redacted]")
+                for form in {
+                    key,
+                    json.dumps(key, ensure_ascii=False)[1:-1],
+                    json.dumps(key, ensure_ascii=True)[1:-1],
+                }:
+                    text = text.replace(form, "[redacted]")
+        text = re.sub(
+            r"-----BEGIN [A-Z ]*PRIVATE KEY-----.*?-----END [A-Z ]*PRIVATE KEY-----",
+            "[redacted private key]",
+            text,
+            flags=re.S,
+        )
         return safe_summary(text)
 
     def conversation(self, title="新对话"):

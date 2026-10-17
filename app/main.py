@@ -334,27 +334,15 @@ def create_app(config=None):
 
     @app.get("/api/v1/settings/email", dependencies=[Depends(owner)])
     def email_settings():
+        config = mail.configuration()
         return {
-            "email": auth.secret("owner_email"),
-            "smtp_host": store.setting("smtp_host", "smtp.qq.com"),
-            "smtp_port": store.setting("smtp_port", 465),
-            "smtp_mode": store.setting("smtp_mode", "ssl"),
-            "smtp_username": auth.secret("smtp_username", auth.secret("owner_email")),
-            "configured": bool(auth.secret("smtp_password")),
+            **{key: value for key, value in config.items() if key != "smtp_password"},
+            "configured": bool(config["smtp_password"]),
         }
 
     @app.put("/api/v1/settings/email", dependencies=[Depends(owner)])
     def save_email_settings(body: EmailSettings):
-        with store.connect() as db:
-            db.execute("UPDATE email_codes SET used=1")
-        auth.set_secret("owner_email", body.email.strip().lower())
-        auth.set_secret(
-            "smtp_username", body.smtp_username or body.email.strip().lower()
-        )
-        if body.smtp_password:
-            auth.set_secret("smtp_password", body.smtp_password)
-        for key in ("smtp_host", "smtp_port", "smtp_mode"):
-            store.set_setting(key, getattr(body, key))
+        mail.configure(body.model_dump())
         store.audit("email.configured", {})
         return email_settings()
 

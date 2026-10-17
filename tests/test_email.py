@@ -189,3 +189,55 @@ def test_unconfigured_mail_reports_unavailable_without_claiming_delivery(tmp_pat
         == 503
     )
     assert client.get("/api/v1/settings/email").status_code == 401
+
+
+def test_smtp_uses_one_tls_and_credentials_snapshot_during_config_change(
+    tmp_path, monkeypatch
+):
+    from app.mail import MailCodes
+    import app.mail as mail_module
+
+    app, client, sent = setup(tmp_path, monkeypatch)
+    config = {
+        "email": "owner@example.com",
+        "smtp_host": "smtp.example.com",
+        "smtp_port": 587,
+        "smtp_mode": "starttls",
+        "smtp_username": "owner@example.com",
+        "smtp_password": "synthetic-smtp-secret",
+    }
+    app.state.mail.configure(config)
+    observed = []
+
+    class FakeSMTP:
+        def __init__(self, *args, **kwargs):
+            self.tls = False
+            app.state.mail.configure(
+                {
+                    **config,
+                    "smtp_host": "other.example.com",
+                    "smtp_mode": "ssl",
+                    "smtp_password": "replacement-synthetic-secret",
+                }
+            )
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_):
+            pass
+
+        def starttls(self, context):
+            assert context.check_hostname
+            self.tls = True
+
+        def login(self, username, password):
+            assert self.tls
+            observed.append((username, password))
+
+        def send_message(self, message):
+            pass
+
+    monkeypatch.setattr(mail_module.smtplib, "SMTP", FakeSMTP)
+    MailCodes._send(app.state.mail, "owner@example.com", "123456", "login")
+    assert observed == [("owner@example.com", "synthetic-smtp-secret")]

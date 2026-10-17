@@ -13,7 +13,7 @@ Copy-Item .env.example .env
 .venv/Scripts/python -m uvicorn app.main:app --host 127.0.0.1 --port 8000
 ```
 
-打开前端创建主人账号，初始化码在 `data/bootstrap.code`。没有公开注册接口。设置页配置 DeepSeek 密钥；默认模型 `deepseek-flash`，接口为完整的 Chat Completions URL。密钥本地加密后持久化，不回传前端。
+新数据目录首次打开前端创建主人账号，初始化码在 `data/bootstrap.code`。当前主人的本地数据已单独初始化，没有公开注册接口。设置页配置 DeepSeek 密钥；默认模型 `deepseek-flash`，接口为完整的 Chat Completions URL。密钥本地加密后持久化，不回传前端。
 
 仅运行一个 API 进程（不要配置多个 Uvicorn workers）。启动时把未完成任务标记中断，不自动重做副作用。事件可回放；定时任务停机期间不补跑。
 
@@ -47,4 +47,8 @@ python -m pip install -e '.[test]'
 python -m pytest -q
 ```
 
-离线模型替身测试真实 Tina 工具循环，不消耗模型费用或连接真实服务器。[API 契约](docs/openapi.json)、[需求](docs/product-spec.md)、[来源许可](THIRD_PARTY.md)、[审查](docs/audit-plan.md)。本地实现，未推送、未部署；实际模型、SSH、图像服务需主人的配置和真实环境验证。
+离线模型替身测试真实 Tina 工具循环，不消耗模型费用或连接真实服务器。[API 契约](docs/openapi.json)、[需求](docs/product-spec.md)、[来源许可](THIRD_PARTY.md)、[双轴审查](docs/code-review.md)。DeepSeek 真正调用与写文件另外验收成功；SSH、SMTP、图像服务及云部署等待相应环境。
+
+邮箱支持绑定单主人、验证码登录及找回密码，QQ SMTP 默认 465 SSL/TLS；授权码在设置中加密保存。没有授权码会明确提示不可用。6 位验证码 10 分钟有效、单次消费、最多 5 次失败、60 秒冷却与持久发送配额；重置密码撤销旧会话。
+
+[2 核 4GB 部署准备](docs/deployment.md)：默认单个任务执行，其余持久排队。容器与 TLS 配置已准备，未在服务器实际运行。

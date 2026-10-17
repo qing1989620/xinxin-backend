@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import json
 import secrets
 import smtplib
 import ssl
@@ -37,11 +38,59 @@ class MailCodes:
             )
 
     def enabled(self):
+        config = self.configuration()
         return bool(
-            self.auth.secret("owner_email")
-            and self.auth.secret("smtp_password")
+            config["email"]
+            and config["smtp_password"]
             and self.store.one("SELECT id FROM owner")
         )
+
+    def configuration(self):
+        # A single SELECT observes one committed set of TLS and credentials.
+        rows = {
+            row["key"]: json.loads(row["value"])
+            for row in self.store.all(
+                "SELECT key,value FROM settings WHERE key IN ('secret:owner_email','secret:smtp_username','secret:smtp_password','smtp_host','smtp_port','smtp_mode')"
+            )
+        }
+
+        def secret(name):
+            value = rows.get("secret:" + name)
+            return self.auth.vault.decrypt(value.encode()).decode() if value else ""
+
+        email = secret("owner_email")
+        return {
+            "email": email,
+            "smtp_username": secret("smtp_username") or email,
+            "smtp_password": secret("smtp_password"),
+            "smtp_host": rows.get("smtp_host", "smtp.qq.com"),
+            "smtp_port": rows.get("smtp_port", 465),
+            "smtp_mode": rows.get("smtp_mode", "ssl"),
+        }
+
+    def configure(self, values):
+        email = values["email"].strip().lower()
+        plain = {key: values[key] for key in ("smtp_host", "smtp_port", "smtp_mode")}
+        to_save = {
+            "owner_email": email,
+            "smtp_username": values["smtp_username"] or email,
+        }
+        if values["smtp_password"]:
+            to_save["smtp_password"] = values["smtp_password"]
+        encrypted = {
+            "secret:" + key: self.auth.vault.encrypt(value.encode()).decode()
+            for key, value in to_save.items()
+        }
+        with self.store.connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            db.executemany(
+                "INSERT INTO settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                [
+                    (key, json.dumps(value))
+                    for key, value in {**plain, **encrypted}.items()
+                ],
+            )
+            db.execute("UPDATE email_codes SET used=1")
 
     def digest(self, email, scene, code):
         return hmac.new(
@@ -116,9 +165,19 @@ class MailCodes:
         }
 
     def _send(self, recipient, code, scene):
-        host = self.store.setting("smtp_host", "smtp.qq.com")
-        port = self.store.setting("smtp_port", 465)
-        username = self.auth.secret("smtp_username", recipient)
+        config = self.configuration()
+        if config["email"].strip().lower() != recipient:
+            raise RuntimeError("邮件配置已改变，请重新获取验证码")
+        host, port, username, mode, password = (
+            config[key]
+            for key in (
+                "smtp_host",
+                "smtp_port",
+                "smtp_username",
+                "smtp_mode",
+                "smtp_password",
+            )
+        )
         message = EmailMessage()
         message["From"] = username
         message["To"] = recipient
@@ -129,14 +188,14 @@ class MailCodes:
             f'你的 Xinxin 验证码是：{code}\n\n此验证码 10 分钟内有效，仅可使用一次。\n用途：{"登录" if scene == "login" else "重置密码"}。\n如果这次操作不是你发起的，请忽略此邮件。'
         )
         context = ssl.create_default_context()
-        if self.store.setting("smtp_mode", "ssl") == "ssl":
+        if mode == "ssl":
             connection = smtplib.SMTP_SSL(host, port, timeout=10, context=context)
         else:
             connection = smtplib.SMTP(host, port, timeout=10)
         with connection as smtp:
-            if self.store.setting("smtp_mode", "ssl") == "starttls":
+            if mode == "starttls":
                 smtp.starttls(context=context)
-            smtp.login(username, self.auth.secret("smtp_password"))
+            smtp.login(username, password)
             smtp.send_message(message)
 
     def consume(self, email, scene, code, verified):

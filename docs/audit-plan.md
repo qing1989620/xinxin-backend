@@ -7,7 +7,7 @@
 - [codebase-design](https://github.com/mattpocock/skills/blob/49dd158d1076134a641b33efb035946536778336/skills/engineering/codebase-design/SKILL.md)，用于职责、接口和可测试性评估。
 - [code-review](https://github.com/mattpocock/skills/blob/49dd158d1076134a641b33efb035946536778336/skills/engineering/code-review/SKILL.md)，用于实现后的 Standards / Spec 双轴审查。
 
-本阶段只有准备材料，尚无功能实现差异，不能宣称已完成正式代码审计。
+本地实现已经过固定差异的独立 Standards / Spec 双轴审查；输入、发现、修复与回归见 [code-review.md](code-review.md)。真实外部部署仍未验收。
 
 实施后固定可解析的 Git 基线和需求文档，先确认 diff 非空，再按 code-review 技能分别审查：
 
