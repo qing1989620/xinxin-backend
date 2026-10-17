@@ -1,0 +1,57 @@
+{
+  "internal_https_verified": true,
+  "public_https_access": "blocked_by_aliyun_icp",
+  "restart_session_and_files_preserved": true,
+  "files_verified": 18,
+  "encrypted_values_verified": 5,
+  "backup_restore_integrity": true,
+  "apk_tls_download_sha256": "4cde13d90efcbdc9addf23322335744ad01e3047a9b38b422eb167fad101adb9",
+  "certificate": {
+    "issuer": [
+      [
+        [
+          "countryName",
+          "US"
+        ]
+      ],
+      [
+        [
+          "organizationName",
+          "Let's Encrypt"
+        ]
+      ],
+      [
+        [
+          "commonName",
+          "YE2"
+        ]
+      ]
+    ],
+    "notAfter": "Jan 15 14:50:52 2027 GMT",
+    "subjectAltName": [
+      [
+        "DNS",
+        "xinxin.zhixuedu.cn"
+      ]
+    ]
+  },
+  "services": {
+    "xinxin-backend": {
+      "NRestarts": "0",
+      "MemoryCurrent": "641359872",
+      "ActiveState": "active",
+      "UnitFileState": "enabled"
+    },
+    "xinxin-web": {
+      "NRestarts": "0",
+      "MemoryCurrent": "40652800",
+      "ActiveState": "active",
+      "UnitFileState": "enabled"
+    },
+    "xinxin-backup.timer": {
+      "ActiveState": "active",
+      "UnitFileState": "enabled"
+    }
+  },
+  "memory_available_kib": 2549200
+}

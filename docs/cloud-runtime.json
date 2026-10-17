@@ -1,0 +1,90 @@
+{
+  "scope": "real TLS with loopback DNS resolution; public ICP blocking tested separately",
+  "checks": {
+    "tls_health": true,
+    "private_api_401": true,
+    "owner_login": true,
+    "registration_disabled": true,
+    "android_cors": true,
+    "skills_count": 39,
+    "skill_search": true,
+    "upload_retry_download": true,
+    "managed_server_configured": true,
+    "agent_host_command_and_artifact": true,
+    "agent_pinned_ssh": true,
+    "agent_attachment_read": true,
+    "persona_birthday": true,
+    "logout": true
+  },
+  "skill_status": {
+    "encoder": {
+      "kind": "dense-onnx",
+      "active": true,
+      "degraded": false,
+      "model": "Xenova/multilingual-e5-small",
+      "revision": "761b726dd34fb83930e26aab4e9ac3899aa1fa78",
+      "dimension": 384,
+      "max_tokens": 256,
+      "threads": 2
+    },
+    "weights": [
+      0.35,
+      0.55,
+      0.1
+    ],
+    "skill_count": 39,
+    "learning_updates": 0,
+    "algorithm": "SkillNet BM25 + E5 semantic + structural weighted fusion + evidence-gated shared LinUCB",
+    "source_revision": "0af2de6a9c8b129e174e3442b67c5f7cb4324db9",
+    "components": {
+      "bm25": true,
+      "vector": true,
+      "structural": true,
+      "dependency_graph": true,
+      "llm_rerank": false
+    }
+  },
+  "cases": {
+    "命令与产物": {
+      "run_id": "540ae84eedae4844a1c6e037a8d7bfbc",
+      "status": "completed",
+      "events": 95,
+      "tools": [
+        "execute_command",
+        "publish_file"
+      ],
+      "result": "好滴，我先跑这条命令。好了呀，两步都成了。\n\n- 命令执行：exit 0，系统 Linux，输出 `Xinxin cloud marker 20261018`\n- 产物：`cloud-acceptance.txt`，28 字节，sha256 `612dbb89…f5bb2e`，已发布可下载\n\n没碰其他私人文件。",
+      "files": [
+        "c0ef7b93141d408285c98d81ff23e8e2"
+      ]
+    },
+    "SSH 管理权限": {
+      "run_id": "b46127cd86944e4aa681bf1d2e79a5f5",
+      "status": "completed",
+      "events": 57,
+      "tools": [
+        "run_remote_command"
+      ],
+      "result": "好了呀，远端执行成功，退出码 0，输出是：\n\n```\nroot\nLinux\nxinxin-ssh-cloud-verified\n```\n\n只跑了这一条只读命令，没动文件，也没碰私人资料。",
+      "files": []
+    },
+    "附件读取": {
+      "run_id": "a22c899d86f84714ae726821a3181450",
+      "status": "completed",
+      "events": 42,
+      "tools": [
+        "read_document"
+      ],
+      "result": "四位数字是 **8831**。\n\n文件里写着 “Xinxin cloud upload fixture: 8831. Synthetic only.”，我只读了这一个附件。",
+      "files": []
+    },
+    "生日": {
+      "run_id": "e7aa14036aac4cd3b3ac25b0575f3a2c",
+      "status": "completed",
+      "events": 13,
+      "tools": [],
+      "result": "2007年11月9日",
+      "files": []
+    }
+  }
+}

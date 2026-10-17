@@ -67,10 +67,10 @@ python -m pip install -e '.[test]'
 python -m pytest -q
 ```
 
-离线模型替身测试真实 Tina 工具循环，不消耗模型费用或连接真实服务器。[API 契约](docs/openapi.json)、[需求](docs/product-spec.md)、[来源许可](THIRD_PARTY.md)、[双轴审查](docs/code-review.md)。DeepSeek 真正调用与写文件另外验收成功；SSH、SMTP、图像服务及云部署等待相应环境。
+离线模型替身测试真实 Tina 工具循环，不消耗模型费用或连接真实服务器。[API 契约](docs/openapi.json)、[需求](docs/product-spec.md)、[来源许可](THIRD_PARTY.md)、[双轴审查](docs/code-review.md)。最新后端84项测试通过；云端真实DeepSeek、本机命令与产物、固定主机公钥SSH及附件读取另有验收证据。SMTP实际送达和图像转换仍待服务授权。
 
 邮箱支持绑定单主人、验证码登录及找回密码，QQ SMTP 默认 465 SSL/TLS；授权码在设置中加密保存。没有授权码会明确提示不可用。6 位验证码 10 分钟有效、单次消费、最多 5 次失败、60 秒冷却与持久发送配额；重置密码撤销旧会话。
 
-[2 核 4GB 部署准备](docs/deployment.md)：默认单个任务执行，其余持久排队。容器与 TLS 配置已准备，未在服务器实际运行。
+[云端部署与恢复](docs/cloud-deployment.md)：杭州2核4GB，systemd + 独立Python + Caddy，默认单任务，其余持久排队。服务内部真实TLS、重启持久化与实际备份恢复通过。公网受ICP检查拦截，主人选择保留按量计费，通过 [Tailscale私有手机连接](docs/private-mobile.md) 使用；账号绑定及手机换网待验收。[容器方案](docs/deployment.md)保留，未作为本次运行方式。
 
-本轮新增30个固定来源技能参考包（本地合计39项），人格2.1与角色生日，64MiB认证资源上传、入站限量与幂等重试；技能脚本按数据读取，权限继续独立判断。[资源需求](docs/resources-spec.md)、[独立双轴复验](docs/resources-review.md)、[真实模型资源与生日验证](docs/resource-execution.json)。本轮只本地提交，待主人电脑与真机验收后明确通知再推送。
+新增30个固定来源技能参考包（合计39项），人格2.1与角色生日，64MiB认证资源上传、入站限量与幂等重试；技能脚本按数据读取，权限继续独立判断。[资源需求](docs/resources-spec.md)、[资源双轴复验](docs/resources-review.md)、[真实模型资源与生日验证](docs/resource-execution.json)。主人已验收电脑与旧局域网APK，并授权推送和部署。[云端双轴审查](docs/cloud-review.md)、[云端运行](docs/cloud-runtime.json)、[备份恢复](docs/cloud-recovery.json)分别记录实际范围，新私有连接单独验收。
