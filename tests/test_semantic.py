@@ -32,7 +32,10 @@ def test_tied_structural_channel_contributes_its_declared_weight(tmp_path, monke
     monkeypatch.setenv("XINXIN_SKILL_ENCODER", "lexical")
     router = SkillRouter(Store(tmp_path))
     structural = router._structural_hits("开发和绘图")
-    assert len(structural) == 2 and len({score for _, score in structural}) == 1
+    assert {"coding-workspace", "scientific-plotting"} <= {
+        name for name, _ in structural
+    }
+    assert len({score for _, score in structural}) == 1
     baseline = dict(weighted_fuse([structural], [0], agreement_bonus=0))
     boosted = dict(weighted_fuse([structural], [0.1], agreement_bonus=0))
     assert all(
@@ -77,6 +80,29 @@ def test_pinned_manifest_rejects_same_size_tampering(tmp_path, monkeypatch):
     model.write_bytes(b"evil")
     with pytest.raises(ValueError, match="integrity"):
         semantic.verify_model(tmp_path)
+
+
+def test_independent_candidates_keep_relevance_order_in_dependency_preview(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("XINXIN_SKILL_ENCODER", "lexical")
+    router = SkillRouter(Store(tmp_path))
+    monkeypatch.setattr(
+        router.bm25,
+        "search",
+        lambda *_args, **_kwargs: [
+            ("server-deployment", 10),
+            ("coding-workspace", 8),
+            ("scientific-plotting", 5),
+        ],
+    )
+    monkeypatch.setattr(router.vector, "search", lambda *_args, **_kwargs: [])
+    assert router.search("opaque", k=3)["order"] == [
+        "server-deployment",
+        "coding-workspace",
+        "private-documents",
+        "scientific-plotting",
+    ]
 
 
 def test_transitive_dependencies_are_loaded_before_the_selected_skill(

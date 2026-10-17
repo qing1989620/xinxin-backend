@@ -13,6 +13,7 @@ from .skillnet.index import BM25Index, weighted_fuse
 from .skillnet.semantic import make_index, DENSE_WEIGHTS, WEIGHTS
 from .skillnet.schema import Skill
 from .skillnet.bandit import SharedLinUCB
+from .skill_packages import SkillPackages
 
 BUILTINS = [
     (
@@ -145,6 +146,25 @@ class SkillRouter:
                     plot_entry.read_text(encoding="utf-8")
                     + "\n\n平台工具：plot_csv_tool 生成基础图表，list_gallery 查看样图，read_plot_resource 按相对路径读取样式卡、阶段说明与参考脚本。复杂图可用 copy_document_to_workspace 读取所选 CSV，在获准完整权限后编写脚本执行，publish_file 交付实际生成的文件。"
                 )
+            self.packages = SkillPackages()
+            builtin_tools = dict(tools)
+            for card in self.packages.cards.values():
+                name, base = card["id"], card["base_skill"]
+                skills.append(
+                    Skill(
+                        name=name,
+                        description=card["description"],
+                        domain=card["domain"],
+                        tags=[card["domain"]],
+                        capability=card["name"],
+                        use_when=[card["original_description"]],
+                        relations=[("depend_on", base)],
+                        source="github",
+                        license=card["license"],
+                    )
+                )
+                # Full reference bodies are loaded lazily and rehashed on every read.
+                tools[name] = list(builtin_tools[base])
             for path in sorted(self.directory.glob("*/SKILL.md")):
                 text = path.read_text(encoding="utf-8")
                 if len(text) > 150000:
@@ -196,7 +216,10 @@ class SkillRouter:
                         {
                             "scene-distillation-zine-v1-3": "拾景 · 影像蒸馏",
                             "scenes-gathered-zine-v1-3": "拾景 · 实景拼贴",
-                        }.get(s.name, s.name),
+                        }.get(
+                            s.name,
+                            self.packages.cards.get(s.name, {}).get("name", s.name),
+                        ),
                     ),
                     "description": {
                         "scene-distillation-zine-v1-3": "从照片提炼情绪、形状和色彩，以源自原图的插画重新构成留白充足的独立海报。",
@@ -205,12 +228,26 @@ class SkillRouter:
                     "domain": s.domain,
                     "tools": self.tools[s.name],
                     "relations": s.relations,
-                    "source": (
+                    "source": "skillnet-community"
+                    if s.name in self.packages.cards
+                    else (
                         "personal"
                         if s.domain in {"图片", "自定义"}
                         and s.name not in {b[0] for b in BUILTINS}
                         else "xinxin"
                     ),
+                    "provenance": {
+                        key: self.packages.cards[s.name][key]
+                        for key in (
+                            "repository",
+                            "revision",
+                            "source_url",
+                            "license",
+                            "execution_verified",
+                        )
+                    }
+                    if s.name in self.packages.cards
+                    else None,
                     "enabled": True,
                 }
                 for s in self.library
@@ -234,6 +271,21 @@ class SkillRouter:
                     ],
                     key=lambda item: -item[1],
                 )
+            # An explicit registered ID from the skill chooser is an intentional
+            # selection, not a grant of authority or evidence of execution.
+            explicit = [
+                s.name
+                for s in self.library
+                if re.search(
+                    r"(?<![a-z0-9-])" + re.escape(s.name) + r"(?![a-z0-9-])",
+                    query.lower(),
+                )
+            ]
+            if explicit:
+                lookup = dict(fused)
+                fused = [(name, lookup.get(name, 0)) for name in explicit] + [
+                    (name, score) for name, score in fused if name not in explicit
+                ]
             by_name = {s["id"]: s for s in self.all()}
             channels = {
                 "bm25": dict(bm25),
@@ -274,8 +326,10 @@ class SkillRouter:
                 visited.add(name)
                 ordered.append(name)
 
-            for name in sorted(names):
-                visit(name)
+            # Preserve relevance order among independent candidates. DFS only
+            # moves genuine prerequisites ahead of their dependent skill.
+            for candidate in selected:
+                visit(candidate["id"])
             return {
                 "query": query,
                 "skills": selected,
@@ -323,12 +377,45 @@ class SkillRouter:
                 },
             }
 
-    def load(self, name):
+    def load(self, name, offset=None):
         with self.lock:
+            if offset is not None and not 0 <= offset <= 2_000_000:
+                raise ValueError("技能读取偏移无效")
+            if name in self.packages.cards:
+                card = self.packages.cards[name]
+                if offset is None:
+                    pages, cursor = [], 0
+                    while True:
+                        page = self.packages.read(name, offset=cursor)
+                        pages.append(page["text"])
+                        if page["next_offset"] is None:
+                            break
+                        cursor = page["next_offset"]
+                    text = "".join(pages)
+                else:
+                    page = self.packages.read(name, offset=offset)
+                    text = page["text"]
+                return {
+                    "name": name,
+                    "markdown": text,
+                    "tools": self.tools[name],
+                    "next_offset": None if offset is None else page["next_offset"],
+                    "resources": [f["path"] for f in card["files"]],
+                    "provenance": {
+                        key: card[key]
+                        for key in ("repository", "revision", "source_url", "license")
+                    },
+                    "adaptation": "这是只读方法与脚本参考。用 read_skill_resource 分页读取列出的资源；不要直接执行包中的脚本。正文提到的外部技能、工具、服务不一定已安装，应先检查。平台工具权限独立判断，需安装依赖或运行脚本时检查环境与内容，再按本轮授权处理。",
+                }
             if name not in self.bodies:
                 raise ValueError("技能不存在")
             return {
                 "name": name,
-                "markdown": self.bodies[name],
+                "markdown": self.bodies[name]
+                if offset is None
+                else self.bodies[name][offset : offset + 12000],
+                "next_offset": offset + 12000
+                if offset is not None and offset + 12000 < len(self.bodies[name])
+                else None,
                 "tools": self.tools[name],
             }

@@ -40,7 +40,7 @@ class Config:
             x.strip()
             for x in os.getenv(
                 "XINXIN_CORS_ORIGINS",
-                "http://localhost:5173,http://127.0.0.1:5173,https://localhost,http://localhost,capacitor://localhost",
+                "http://localhost:5188,http://127.0.0.1:5188,http://localhost:5173,http://127.0.0.1:5173,https://localhost,http://localhost,capacitor://localhost",
             ).split(",")
             if x.strip()
         )

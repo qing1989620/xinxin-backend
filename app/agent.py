@@ -287,9 +287,14 @@ class TaskManager:
             return self.router.search(query)
 
         @tools.register()
-        def load_skill(name: str):
-            """Load one full skill instruction after discovery."""
-            return self.router.load(name)
+        def load_skill(name: str, offset: int = 0):
+            """Load a skill instruction page after discovery; follow next_offset until null."""
+            return self.router.load(name, offset)
+
+        @tools.register()
+        def read_skill_resource(name: str, path: str, offset: int = 0):
+            """Read a listed skill reference/script as data, never execute it. Follow next_offset."""
+            return self.router.packages.read(name, path, offset)
 
         @tools.register()
         def search_documents(query: str):
@@ -348,9 +353,10 @@ class TaskManager:
             """Save a generated workspace file as an authenticated downloadable artifact; requires workspace permission."""
             policy.require("workspace")
             target = policy.path(path)
-            if not target.is_file() or target.stat().st_size > 24 * 1024 * 1024:
-                raise ValueError("文件不存在或超过 24 MB")
-            return self.library.save(target.name, target.read_bytes(), run_id=run["id"])
+            if not target.is_file():
+                raise ValueError("文件不存在")
+            with target.open("rb") as source:
+                return self.library.save_stream(target.name, source, run_id=run["id"])
 
         @tools.register()
         def execute_command(command: str):
@@ -382,8 +388,9 @@ class TaskManager:
                 raise ValueError("请先配置服务器私钥及已验证的 SSH 主机公钥")
             secrets_dir = self.store.directory / "ssh-runtime"
             secrets_dir.mkdir(exist_ok=True)
-            key_path, hosts = secrets_dir / (run["id"] + ".key"), secrets_dir / (
-                run["id"] + ".hosts"
+            key_path, hosts = (
+                secrets_dir / (run["id"] + ".key"),
+                secrets_dir / (run["id"] + ".hosts"),
             )
             key_path.write_text(key.rstrip() + "\n", encoding="utf-8")
             hosts.write_text(server["host_key"] + "\n", encoding="utf-8")
@@ -606,7 +613,9 @@ class TaskManager:
                             run,
                             matches,
                             memories,
-                            self.store.directory / "workspaces" / run["conversation_id"],
+                            self.store.directory
+                            / "workspaces"
+                            / run["conversation_id"],
                         )
                         agent = Agent(
                             llm=gateway,

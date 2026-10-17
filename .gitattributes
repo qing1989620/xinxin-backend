@@ -1,0 +1,2 @@
+# Package manifests record original bytes. Do not normalize upstream resources.
+resources/skills/packages/** -text

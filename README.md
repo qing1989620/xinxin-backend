@@ -33,6 +33,8 @@ Copy-Item .env.example .env
 
 Xinxin 的版本化人格在 `app/persona.py`：轻微傲娇、可爱亲近、认真办事。每轮系统消息包含人格、不可覆盖的执行契约和真实 OS/shell/工作区/权限上下文；人设不修改授权，也不假报完成。实际人格/本机命令验收见 `docs/persona-execution.json`。
 
+本轮 [独立双轴审查与修复复验](docs/skill-persona-review.md)、[语义模型样本与占用](docs/semantic-verification.json)。
+
 ## 权限
 
 | 等级 | 范围 |

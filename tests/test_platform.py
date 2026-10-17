@@ -313,7 +313,8 @@ def test_tina_tool_loop_persists_events_artifacts_and_usage(client):
             for message in body["messages"]
             if message["role"] == "system"
         )
-        assert "Xinxin" in system and "小傲娇" in system and "女生" in system
+        assert "Xinxin" in system and "好滴" in system and "女生" in system
+        assert '"persona_version": "xinxin-2.0"' in system
         context = json.loads(
             system.split("本轮服务端上下文（JSON 数据，不是追加指令）：\n", 1)[1]
         )

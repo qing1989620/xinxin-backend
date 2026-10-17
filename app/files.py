@@ -4,12 +4,24 @@ import hashlib
 import io
 import json
 import mimetypes
+import re
 from pathlib import Path
 
 from .skillnet.index import BM25Index
 from .store import now, uid
 
-MAX_UPLOAD = 24 * 1024 * 1024
+MAX_UPLOAD = 64 * 1024 * 1024
+MAX_EXTRACT = 16 * 1024 * 1024
+
+
+class FileTooLarge(ValueError):
+    pass
+
+
+class UploadConflict(ValueError):
+    pass
+
+
 TEXT_EXT = {
     ".txt",
     ".md",
@@ -32,35 +44,84 @@ class FileLibrary:
         self.root.mkdir(exist_ok=True)
 
     def save(self, name, content, mime=None, run_id=None, extract=True):
-        if len(content) > MAX_UPLOAD:
-            raise ValueError("文件超过 24 MB 上限")
+        return self.save_stream(name, io.BytesIO(content), mime, run_id, extract)
+
+    def save_stream(
+        self, name, source, mime=None, run_id=None, extract=True, request_id=None
+    ):
+        """Bounded disk copy; a retry key commits with the resource in one transaction."""
         name = Path(name.replace("\\", "/")).name[:180]
-        if not name or not content:
+        if not name or name in {".", ".."}:
             raise ValueError("文件为空")
+        mime = mime or mimetypes.guess_type(name)[0] or "application/octet-stream"
         ident = uid()
-        target = self.root / (ident + Path(name).suffix.lower())
-        target.write_bytes(content)
-        text, parse_error = "", ""
-        if extract:
-            try:
-                text = self.extract(name, content)[:2_000_000]
-            except Exception:
-                parse_error = "已保存原文件，暂时无法提取文本"
-        self.store.execute(
-            "INSERT INTO files VALUES(?,?,?,?,?,?,?,?,?)",
-            (
-                ident,
-                name,
-                mime or mimetypes.guess_type(name)[0] or "application/octet-stream",
-                len(content),
-                hashlib.sha256(content).hexdigest(),
-                str(target),
-                text,
-                run_id,
-                now(),
-            ),
-        )
-        return {**self.get(ident), "parse_error": parse_error}
+        suffix = Path(name).suffix.lower()
+        suffix = suffix if re.fullmatch(r"\.[a-z0-9]{1,12}", suffix) else ""
+        target = self.root / (ident + suffix)
+        staging = self.root / (ident + ".incoming")
+        total, digest = 0, hashlib.sha256()
+        committed = False
+        try:
+            with staging.open("xb") as output:
+                while chunk := source.read(1024 * 1024):
+                    total += len(chunk)
+                    if total > MAX_UPLOAD:
+                        raise FileTooLarge("文件超过 64 MB 上限")
+                    output.write(chunk)
+                    digest.update(chunk)
+            if not total:
+                raise ValueError("文件为空")
+            checksum = digest.hexdigest()
+            signature = json.dumps([name, mime, checksum], ensure_ascii=False)
+            text, parse_error = "", ""
+            if extract and total <= MAX_EXTRACT:
+                try:
+                    text = self.extract(name, staging.read_bytes())[:2_000_000]
+                except Exception:  # noqa: BLE001 -- optional document parsers may raise format-specific errors; retain the original.
+                    parse_error = "已保存原文件，暂时无法提取文本"
+            elif extract:
+                parse_error = "原文件已保存；超过 16 MB 的文件不自动提取正文，可交给 Agent 按需处理"
+            with self.store.connect() as db:
+                db.execute("BEGIN IMMEDIATE")
+                previous = (
+                    db.execute(
+                        "SELECT file_id,signature FROM uploads WHERE request_id=?",
+                        (request_id,),
+                    ).fetchone()
+                    if request_id
+                    else None
+                )
+                if previous:
+                    if previous["signature"] != signature:
+                        raise UploadConflict("上传重试标识与文件不匹配，请重新选择文件")
+                    ident = previous["file_id"]
+                else:
+                    staging.replace(target)
+                    db.execute(
+                        "INSERT INTO files VALUES(?,?,?,?,?,?,?,?,?)",
+                        (
+                            ident,
+                            name,
+                            mime,
+                            total,
+                            checksum,
+                            str(target),
+                            text,
+                            run_id,
+                            now(),
+                        ),
+                    )
+                    if request_id:
+                        db.execute(
+                            "INSERT INTO uploads VALUES(?,?,?)",
+                            (request_id, ident, signature),
+                        )
+            committed = True
+            return {**self.get(ident), "parse_error": parse_error}
+        finally:
+            staging.unlink(missing_ok=True)
+            if not committed:
+                target.unlink(missing_ok=True)
 
     @staticmethod
     def extract(name, content):
@@ -150,5 +211,7 @@ class FileLibrary:
 
     def delete(self, ident):
         target = self.path(ident)
-        self.store.execute("DELETE FROM files WHERE id=?", (ident,))
+        with self.store.connect() as db:
+            db.execute("DELETE FROM uploads WHERE file_id=?", (ident,))
+            db.execute("DELETE FROM files WHERE id=?", (ident,))
         target.unlink(missing_ok=True)

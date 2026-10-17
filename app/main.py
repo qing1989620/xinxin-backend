@@ -28,7 +28,7 @@ from .agent import TaskManager
 from .auth import Auth, password_hash, password_matches
 from .config import Config, ROOT
 from .creative import gallery, plot_csv, transform_image
-from .files import FileLibrary, MAX_UPLOAD
+from .files import FileLibrary, FileTooLarge, UploadConflict
 from .model import endpoint
 from .mail import MailCodes
 from .skills import SkillRouter
@@ -169,6 +169,7 @@ def create_app(config=None):
     auth = Auth(store)
     mail = MailCodes(store, auth)
     library = FileLibrary(store)
+    upload_slots = asyncio.Semaphore(2)
     router = SkillRouter(store)
     manager = TaskManager(store, auth, config, library, router)
 
@@ -216,7 +217,7 @@ def create_app(config=None):
         CORSMiddleware,
         allow_origins=list(config.origins),
         allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE"],
-        allow_headers=["Authorization", "Content-Type", "Last-Event-ID"],
+        allow_headers=["Authorization", "Content-Type", "Last-Event-ID", "X-Upload-ID"],
         expose_headers=["Content-Disposition"],
     )
 
@@ -672,16 +673,27 @@ def create_app(config=None):
         ]
 
     @app.post("/api/v1/files", dependencies=[Depends(owner)])
-    async def upload(file: UploadFile = File(...)):
-        chunks, total = [], 0
-        while chunk := await file.read(1024 * 1024):
-            total += len(chunk)
-            if total > MAX_UPLOAD:
-                raise HTTPException(413, "文件超过 24 MB 上限")
-            chunks.append(chunk)
-        return await asyncio.to_thread(
-            library.save, file.filename or "file", b"".join(chunks), file.content_type
-        )
+    async def upload(
+        file: UploadFile = File(...),
+        x_upload_id: str | None = Header(
+            default=None, min_length=8, max_length=80, pattern=r"^[a-zA-Z0-9-]+$"
+        ),
+    ):
+        try:
+            async with upload_slots:
+                return await asyncio.to_thread(
+                    library.save_stream,
+                    file.filename or "file",
+                    file.file,
+                    file.content_type,
+                    request_id=x_upload_id,
+                )
+        except FileTooLarge as exc:
+            raise HTTPException(413, str(exc)) from None
+        except UploadConflict as exc:
+            raise HTTPException(409, str(exc)) from None
+        finally:
+            await file.close()
 
     @app.get("/api/v1/files/search", dependencies=[Depends(owner)])
     def search_files(q: str = Query(min_length=1, max_length=2000)):
