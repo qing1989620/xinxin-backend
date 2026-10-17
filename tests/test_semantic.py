@@ -5,8 +5,43 @@ import pytest
 
 from app.config import ROOT
 from app.skillnet import semantic
+from app.skillnet.index import weighted_fuse
 from app.skills import SkillRouter
 from app.store import Store
+
+
+@pytest.mark.parametrize("error_name", ["Fail", "RuntimeException", "NotImplemented"])
+def test_native_onnx_errors_degrade_in_auto_and_fail_cleanly_in_dense(
+    tmp_path, monkeypatch, error_name
+):
+    native = pytest.importorskip("onnxruntime.capi.onnxruntime_pybind11_state")
+
+    def unavailable(*_):
+        raise getattr(native, error_name)("synthetic-secret-and-local-path")
+
+    monkeypatch.setattr(semantic, "DenseIndex", unavailable)
+    monkeypatch.setenv("XINXIN_SKILL_ENCODER", "auto")
+    assert semantic.make_index(tmp_path).status["degraded"]
+    monkeypatch.setenv("XINXIN_SKILL_ENCODER", "dense")
+    with pytest.raises(RuntimeError, match="语义模型") as raised:
+        semantic.make_index(tmp_path)
+    assert "synthetic-secret" not in str(raised.value)
+
+
+def test_tied_structural_channel_contributes_its_declared_weight(tmp_path, monkeypatch):
+    monkeypatch.setenv("XINXIN_SKILL_ENCODER", "lexical")
+    router = SkillRouter(Store(tmp_path))
+    structural = router._structural_hits("开发和绘图")
+    assert len(structural) == 2 and len({score for _, score in structural}) == 1
+    baseline = dict(weighted_fuse([structural], [0], agreement_bonus=0))
+    boosted = dict(weighted_fuse([structural], [0.1], agreement_bonus=0))
+    assert all(
+        boosted[name] - baseline[name] == pytest.approx(0.1) for name, _ in structural
+    )
+    assert dict(weighted_fuse([[("single", 5)]], [0.35], agreement_bonus=0))[
+        "single"
+    ] == pytest.approx(0.35)
+    assert dict(weighted_fuse([[("zero", 0)]], [1], agreement_bonus=0))["zero"] == 0
 
 
 def test_missing_encoder_is_observable_and_dense_mode_never_silently_falls_back(

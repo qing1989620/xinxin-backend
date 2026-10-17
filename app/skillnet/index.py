@@ -237,9 +237,13 @@ def weighted_fuse(
             continue
         vals = [s for _, s in run]
         lo, hi = min(vals), max(vals)
-        span = (hi - lo) or 1.0
+        span = hi - lo
         for doc, s in run:
-            agg[doc] = agg.get(doc, 0.0) + w * (s - lo) / span
+            # Xinxin adaptation: a tied positive channel (e.g. matching domain
+            # tags or one exact BM25 hit) still supplies its configured weight.
+            # Upstream's (s - lo) / 1 erased every hit in this case.
+            normalised = (s - lo) / span if span else (1.0 if s > 0 else 0.0)
+            agg[doc] = agg.get(doc, 0.0) + w * normalised
             channel_hits[doc] = channel_hits.get(doc, 0) + 1
     for doc, cnt in channel_hits.items():
         if cnt > 1:

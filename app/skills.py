@@ -254,15 +254,6 @@ class SkillRouter:
             ]
             names = {s["id"] for s in selected}
             dependencies = []
-            for s in selected:
-                for relation, target in s["relations"]:
-                    if (
-                        relation == "depend_on"
-                        and target not in names
-                        and target in by_name
-                    ):
-                        dependencies.append(by_name[target])
-                        names.add(target)
             ordered, visiting, visited = [], set(), set()
 
             def visit(name):

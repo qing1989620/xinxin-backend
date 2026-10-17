@@ -72,6 +72,9 @@ class DenseIndex:
             "max_tokens": 256,
             "threads": 2,
         }
+        # Some native runtimes fail only on the first inference, not session load.
+        # Warm up inside the factory's guarded initialization boundary.
+        self.embed(["semantic readiness check"], "query: ")
 
     def embed(self, texts: list[str], prefix: str):
         np, matrices = self.np, []
@@ -159,7 +162,10 @@ def make_index(data_dir: Path):
     if mode != "lexical":
         try:
             return DenseIndex(directory, data_dir / "semantic-cache")
-        except (ImportError, OSError, ValueError, RuntimeError):
+        except Exception:
+            # Native ORT Fail/RuntimeException/NotImplemented are not Python
+            # RuntimeError subclasses. This is the optional encoder boundary;
+            # auto must degrade for any initialization failure, dense must fail.
             # Never expose local paths, exception inputs or an opaque model error.
             reason = "语义模型或推理依赖不可用；请运行 scripts/setup_semantic_model.py 并重启后端"
     if mode == "dense":
