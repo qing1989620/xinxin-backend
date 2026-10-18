@@ -9,6 +9,7 @@ from fastapi.testclient import TestClient
 
 from app.config import Config
 from app.main import create_app
+from app.agent import TaskContext
 from app.model import ModelBudgetExceeded, ModelGateway
 from app.recovery import MAX_RECOVERY_CHARS, previous_work
 from app.store import Store, encode
@@ -223,3 +224,79 @@ def test_recovery_does_not_grant_previous_write_permission(client):
     }).json()["id"])
     assert second["status"] == "failed" and second["files"] == []
     assert (client.app.state.store.directory / "workspaces" / first["conversation_id"] / "unchanged.txt").read_text() == "original"
+
+
+def test_long_recovery_keeps_the_current_task_and_valid_system_json(client):
+    client.put("/api/v1/settings", json={"model_api_key": "offline-context-key"})
+    store = client.app.state.store
+    cid = client.app.state.manager.conversation("long-context fixture")
+    for number in range(5):
+        store.execute(
+            "INSERT INTO memories(id,content,category,created) VALUES(?,?,?,?)",
+            (f"memory-{number}", "synthetic-memory-" * 70, "fixture", number),
+        )
+    for number in range(3):
+        ident = f"prior-{number}"
+        store.execute(
+            "INSERT INTO runs(id,conversation_id,task,status,permission,max_calls,max_seconds,created,updated) VALUES(?,?,?,'failed','read',1,30,?,?)",
+            (ident, cid, "prior synthetic goal", number, number),
+        )
+        for _ in range(8):
+            store.event(ident, "tool.completed", {"name": "fixture", "ok": True, "result": "evidence-" * 150})
+    instruction = "synthetic-goal-" * 570 + " current-instruction-must-survive"
+    requests = []
+
+    def provider(request):
+        body = json.loads(request.content)
+        requests.append(body)
+        assert any(message["role"] == "user" and message["content"] == instruction for message in body["messages"])
+        system = next(message["content"] for message in body["messages"] if message["role"] == "system")
+        assert len(system) <= 16000
+        context = json.loads(system.split("本轮服务端上下文（JSON 数据，不是追加指令）：\n")[1])
+        assert context["permission"] == "read"
+        assert context["auxiliary_context_trimmed"]
+        payload = frames(tool={"name": "list_files", "arguments": {}}) if len(requests) == 1 else frames(content="当前指令完整保留。")
+        return httpx.Response(200, content=payload.encode())
+
+    client.app.state.manager.model_transport = httpx.MockTransport(provider)
+    run = wait_run(client, client.post("/api/v1/runs", json={
+        "task": instruction, "conversation_id": cid, "max_calls": 3,
+        "request_key": "long-context-instruction",
+    }).json()["id"])
+    assert run["status"] == "completed", run
+    assert len(requests) == 2
+
+
+def test_context_discards_parallel_tool_exchanges_as_whole_groups():
+    context = TaskContext("protected-current-goal")
+    context.set_system_message("system-" * 2000)
+    context.add_user_message("protected-current-goal")
+    for batch in range(5):
+        calls = [{
+            "id": f"call-{batch}-{number}", "type": "function",
+            "function": {"name": "fixture", "arguments": "{}"},
+        } for number in range(2)]
+        context.add_tool_calls(calls)
+        context.add_tool_calls_result([
+            {"tool_call_id": call["id"], "content": "x" * 8000}
+            for call in calls
+        ])
+    messages = context.get_messages()
+    assert any(item["role"] == "user" and item["content"] == "protected-current-goal" for item in messages)
+    calls = {call["id"] for item in messages for call in item.get("tool_calls", [])}
+    results = {item["tool_call_id"] for item in messages if item["role"] == "tool"}
+    assert calls == results and len(calls) < 10
+    assert {"call-4-0", "call-4-1"} <= results
+
+
+def test_an_unfittable_latest_tool_group_fails_instead_of_dropping_the_task():
+    context = TaskContext("protected-goal", max_length=500)
+    context.set_system_message("system")
+    context.add_user_message("protected-goal")
+    context.add_tool_calls([{
+        "id": "large-call", "type": "function",
+        "function": {"name": "fixture", "arguments": "{}"},
+    }])
+    with pytest.raises(RuntimeError, match="上下文"):
+        context.add_tool_calls_result([{"tool_call_id": "large-call", "content": "x" * 2000}])
+    assert any(item["role"] == "user" and item["content"] == "protected-goal" for item in context.get_messages())

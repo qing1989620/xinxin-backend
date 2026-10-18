@@ -10,7 +10,10 @@ import sys
 import threading
 from pathlib import Path
 
-from .config import ROOT, DEFAULT_MODEL_CALLS, DEFAULT_TASK_SECONDS, TOKENS_PER_MODEL_CALL
+from .config import (
+    ROOT, DEFAULT_MODEL_CALLS, DEFAULT_TASK_SECONDS, TOKENS_PER_MODEL_CALL,
+    MAX_CONTEXT_CHARS,
+)
 from .execution import Policy, run_command, remote_command
 from .model import ModelGateway, ModelBudgetExceeded
 from .recovery import previous_work
@@ -21,6 +24,38 @@ from .creative import plot_csv, transform_image, gallery
 sys.path.insert(0, str(ROOT / "vendor"))
 from tina import Agent, Tools, AgentEvents
 from tina.agent.core.executor import ToolsExecutor
+from tina.agent.core.context_manager import ContextManager
+
+
+class TaskContext(ContextManager):
+    """Keep this turn's instruction and whole tool exchanges when trimming."""
+
+    def __init__(self, instruction, max_length=MAX_CONTEXT_CHARS):
+        super().__init__(max_length=max_length, max_tool_result_length=16000)
+        self.instruction = instruction
+
+    def limit_messages(self):
+        current = next((
+            item for item in reversed(self.messages)
+            if item.get("role") == "user" and item.get("content") == self.instruction
+        ), None)
+        groups = []
+        for message in self.messages:
+            if message.get("role") == "tool" and groups and groups[-1][0].get("tool_calls"):
+                groups[-1].append(message)
+            else:
+                groups.append([message])
+        while sum(len(encode(group)) for group in groups) > self.max_length:
+            removable = next((
+                index for index, group in enumerate(groups[:-1])
+                if not any(item.get("role") == "system" or item is current for item in group)
+            ), None)
+            if removable is None:
+                raise RuntimeError(
+                    "本轮上下文超过可用空间；当前指令已保留，请分批读取工具输出后继续。"
+                )
+            groups.pop(removable)
+        self.messages[:] = [message for group in groups for message in group]
 
 
 class PlatformExecutor(ToolsExecutor):
@@ -680,8 +715,9 @@ class TaskManager:
                             tools=tools,
                             events=events,
                             system_prompt=prompt,
+                            context_manager=TaskContext(run["task"]),
                             max_tool_loop=run["max_calls"],
-                            max_context_length=30000,
+                            max_context_length=MAX_CONTEXT_CHARS,
                             max_tool_result_length=16000,
                         )
                         history = self.store.all(

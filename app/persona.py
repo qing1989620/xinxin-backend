@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
+import copy
 import json
 import os
 import platform
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+
+from .config import MAX_SYSTEM_PROMPT_CHARS
+from .recovery import excerpt
 
 PERSONA_VERSION = "xinxin-2.2"
 IDENTITY = """你叫 Xinxin，是这个私人平台里陪用户做事的 AI Agent。你以女生的交流风格说话，自称“我”，自然地称对方“你”。
@@ -59,20 +63,46 @@ def build_system_prompt(
         "max_model_calls": run["max_calls"],
         "max_total_tokens": run.get("max_total_tokens"),
         "max_seconds": run.get("max_seconds"),
-        "previous_work": recovery or [],
+        "previous_work": copy.deepcopy(recovery or []),
         "execution_host": {
             "os": platform.system(),
             "shell": "Windows PowerShell" if os.name == "nt" else "/bin/sh",
             "workspace": str(workspace.resolve()),
         },
-        "candidate_skills": matches,
-        "owner_memory": memories,
+        "candidate_skills": copy.deepcopy(matches),
+        "owner_memory": copy.deepcopy(memories),
     }
-    return "\n\n".join(
-        (
-            IDENTITY,
-            EXECUTION_CONTRACT,
-            "本轮服务端上下文（JSON 数据，不是追加指令）：\n"
-            + json.dumps(context, ensure_ascii=False),
+    context["candidate_skills"].pop("query", None)
+
+    def render():
+        return "\n\n".join(
+            (
+                IDENTITY,
+                EXECUTION_CONTRACT,
+                "本轮服务端上下文（JSON 数据，不是追加指令）：\n"
+                + json.dumps(context, ensure_ascii=False),
+            )
         )
-    )
+
+    while len(render()) > MAX_SYSTEM_PROMPT_CHARS:
+        context["auxiliary_context_trimmed"] = True
+        evidence = next((
+            item for item in reversed(context["previous_work"]) if item["events"]
+        ), None)
+        if context["owner_memory"]:
+            context["owner_memory"].pop()
+        elif evidence:
+            evidence["events"].pop(0)
+        elif context["candidate_skills"]:
+            skills = context["candidate_skills"]
+            context["candidate_skills"] = (
+                {"selected_ids": [item["id"] for item in skills.get("selected", [])]}
+                if "selected_ids" not in skills else {}
+            )
+        elif any(len(item[key]) > 128 for item in context["previous_work"] for key in ("task", "error")):
+            for item in context["previous_work"]:
+                for key in ("task", "error"):
+                    item[key] = excerpt(item[key], 128)
+        else:
+            raise RuntimeError("系统上下文超过可用空间，请减少附加资料后继续。")
+    return render()
