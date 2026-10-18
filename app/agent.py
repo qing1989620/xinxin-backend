@@ -689,7 +689,13 @@ class TaskManager:
                         answered = False
                         async for chunk in agent.apredict(instruction=run["task"]):
                             if chunk.get("tool_calls"):
+                                if text:
+                                    self.store.event(
+                                        ident, "assistant.progress", {"text": text}
+                                    )
+                                text = ""
                                 answered = False
+                                continue
                             if chunk.get("role") == "assistant" and chunk.get(
                                 "content"
                             ):

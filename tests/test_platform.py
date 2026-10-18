@@ -393,7 +393,7 @@ def test_tina_tool_loop_persists_events_artifacts_and_usage(client):
             if message["role"] == "system"
         )
         assert "Xinxin" in system and "好滴" in system and "女生" in system
-        assert '"persona_version": "xinxin-2.1"' in system and "2007-11-09" in system
+        assert '"persona_version": "xinxin-2.2"' in system and "2007-11-09" in system
         context = json.loads(
             system.split("本轮服务端上下文（JSON 数据，不是追加指令）：\n", 1)[1]
         )
@@ -405,6 +405,7 @@ def test_tina_tool_loop_persists_events_artifacts_and_usage(client):
         )
         payload = (
             frames(
+                content="好滴，我先创建文件。",
                 tool={
                     "name": "write_file",
                     "arguments": {"path": "hello.txt", "content": "hello"},
@@ -428,6 +429,19 @@ def test_tina_tool_loop_persists_events_artifacts_and_usage(client):
     ident = response.json()["id"]
     run = wait_run(client, ident)
     assert run["status"] == "completed", run
+    assert run["result"] == "已创建文件，并记录了交付物。"
+    progress = [
+        event
+        for event in client.app.state.store.events(ident)
+        if event["kind"] == "assistant.progress"
+    ]
+    assert [event["data"]["text"] for event in progress] == ["好滴，我先创建文件。"]
+    history = client.get("/api/v1/conversations/" + run["conversation_id"]).json()
+    assert [
+        message["content"]
+        for message in history["messages"]
+        if message["role"] == "assistant"
+    ] == [run["result"]]
     assert run["files"][0]["name"] == "hello.txt"
     assert json.loads(run["usage"])["total_tokens"] == 24
     assert len(requests) == 2
@@ -454,6 +468,66 @@ def test_tina_tool_loop_persists_events_artifacts_and_usage(client):
 
     restored = SkillRouter(client.app.state.store)
     assert restored.bandit.n_updates == 1
+
+
+@pytest.mark.parametrize("max_calls,completed", [(2, False), (3, True)])
+def test_progress_survives_replay_but_is_not_saved_as_the_final_answer(
+    client, max_calls, completed
+):
+    client.put("/api/v1/settings", json={"model_api_key": "offline-progress-key"})
+    calls = 0
+
+    def provider(request):
+        nonlocal calls
+        calls += 1
+        payload = (
+            frames(
+                content=f"进度{calls}：我再确认一下。",
+                tool={"name": "list_files", "arguments": {}},
+            )
+            if calls <= 2
+            else frames(content="检查完成。\n\n```text\n/demo\n```\n\n- 已核对")
+        )
+        return httpx.Response(
+            200, headers={"content-type": "text/event-stream"}, content=payload.encode()
+        )
+
+    client.app.state.manager.model_transport = httpx.MockTransport(provider)
+    response = client.post(
+        "/api/v1/runs",
+        json={
+            "task": "检查合成工作区",
+            "permission": "read",
+            "max_calls": max_calls,
+            "request_key": "progress-budget-case",
+        },
+    )
+    run = wait_run(client, response.json()["id"])
+    assert run["status"] == ("completed" if completed else "failed")
+    events = client.app.state.store.events(run["id"])
+    progress = [event for event in events if event["kind"] == "assistant.progress"]
+    assert [event["data"]["text"] for event in progress] == [
+        "进度1：我再确认一下。",
+        "进度2：我再确认一下。",
+    ]
+    draft = ""
+    for event in events:
+        if event["kind"] == "delta":
+            draft += event["data"]["text"]
+        elif event["kind"] == "assistant.progress":
+            draft = ""
+    assert draft == run["result"]
+    history = client.get("/api/v1/conversations/" + run["conversation_id"]).json()
+    answers = [
+        message["content"]
+        for message in history["messages"]
+        if message["role"] == "assistant"
+    ]
+    if completed:
+        assert answers == ["检查完成。\n\n```text\n/demo\n```\n\n- 已核对"]
+    else:
+        assert answers == [] and run["result"] == ""
+        assert "最终答复" in run["error"]
 
 
 def test_missing_model_key_is_actionable_not_fake_success(client):
