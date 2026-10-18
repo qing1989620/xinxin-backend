@@ -1,0 +1,80 @@
+{
+  "scope": "Real provider, private HTTPS, Tina and managed root SSH; own marked synthetic work only. No owner task replay.",
+  "backend_code_revision": "3accee80935af49c4cd48825f39fc0b4125a24f1",
+  "frontend_code_revision": "c8224215d142fe8cbc11b495b24b2bab1e1e8746",
+  "physical_phone_verified_on_this_revision": false,
+  "same_configuration_competitor_benchmark": false,
+  "checks": {
+    "actual_private_images_preview_and_unchanged_original_checksums": true,
+    "disconnected_client_does_not_cancel_worker": true,
+    "quiet_command_has_persisted_honest_waiting_and_terminal_status": true,
+    "event_replay_after_real_disconnect_has_no_gaps_or_duplicates": true,
+    "same_conversation_original_goal_and_actual_ssh_evidence_restored": true,
+    "first_stage_not_replayed_or_modified": true,
+    "continuation_real_code_and_result_verified": true,
+    "fresh_budget_idempotent_retry_and_stale_parent_rejection": true,
+    "real_model_public_intermediate_explanations": true,
+    "actual_batch_permanent_deletion_cleans_only_own_fixtures": true,
+    "independent_upload_survives_batch_delete": true,
+    "new_signed_apk_download_hash_matches": true,
+    "native_https_origin_cors_and_unauthenticated_preview_denial": true
+  },
+  "runs": [
+    {
+      "task": "one_call_budget_and_disconnected_ssh_command",
+      "status": "failed",
+      "elapsed_seconds": 27.318,
+      "model_calls": 1,
+      "total_tokens": 5854,
+      "public_model_notes": 1,
+      "platform_notes": 2,
+      "waiting_explanations": 1
+    },
+    {
+      "task": "continue_original_goal_with_fresh_budget",
+      "status": "completed",
+      "elapsed_seconds": 12.381,
+      "model_calls": 4,
+      "total_tokens": 31075,
+      "public_model_notes": 2,
+      "platform_notes": 4,
+      "waiting_explanations": 0
+    }
+  ],
+  "actual_private_images": {
+    "count": 11,
+    "preview_bytes": 1955454,
+    "original_bytes": 13245620,
+    "identifiers_and_image_contents_in_report": false
+  },
+  "apk_sha256": "ca72dc8cf15319d05e1ab25ebe810fea02398da4a67187f8115e83a2319e9172",
+  "post_run": {
+    "active_tasks": 0,
+    "synthetic_directory_removed": true,
+    "synthetic_runs_erased": true,
+    "verified_backup_before_activation": true,
+    "services": {
+      "xinxin-backend": {
+        "active": true,
+        "memory_current_bytes": 732377088,
+        "rss_bytes": 691716096
+      },
+      "xinxin-web": {
+        "active": true,
+        "memory_current_bytes": 48574464,
+        "rss_bytes": 27750400
+      },
+      "tailscaled": {
+        "active": true,
+        "memory_current_bytes": 25448448,
+        "rss_bytes": 36319232
+      }
+    },
+    "host_mem_available_bytes": 2388971520,
+    "loopback_gateway_health": "ok"
+  },
+  "earlier_acceptance_attempts": {
+    "count": 1,
+    "cause": "Acceptance fixture initially compared Cache-Control as an exact string; the gateway combines repeated no-store directives. Fixed the assertion to parse HTTP directives; first attempt failed before task creation and was not counted as a pass."
+  }
+}
