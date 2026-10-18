@@ -34,7 +34,7 @@ Android 同一时间只有一个系统 VPN 通道。开启 Clash 会断开 Tails
 
 主人已完成账号绑定与Serve/HTTPS启用。私有网关配置、回环健康、私有Host静态页面、私人API401、no-store与回环绑定已核对；实际私有origin和原生origin预检通过，无关origin拒绝。通过节点映射中的真实Tailscale地址、保持标准TLS验证，完成了服务自身的HTTPS、短期验收会话、39项技能、上传幂等/认证下载、真实DeepSeek回复、SSE顺序与回放、任务幂等及新APK下载MIME/字节一致检查。验收临时会话已撤销，合成对话归档，本次成功验收创建的临时上传已删除。证据见 [private-mobile-runtime.json](private-mobile-runtime.json)。
 
-私有HTTPS由Let's Encrypt签发，服务已后台持久运行，未启用Funnel。新Release已预填实际私有HTTPS地址，沿用同一发布证书；前端10项测试、类型/生产构建、实际Release构建与v2/v3签名通过。仍待另一私有设备及实体手机的连接、Wi-Fi/移动流量切换、分享和软键盘验收，服务自身的测试不能替代这些项目。
+私有HTTPS由Let's Encrypt签发，服务已后台持久运行，未启用Funnel。新Release已预填实际私有HTTPS地址，沿用同一发布证书；前端11项测试、类型/生产构建、实际Release构建与v2/v3签名通过。2026-10-18主人报告手机已实际完成云服务器查看。随后进度分离更新通过服务自身真实模型、事件回放和新APK下载校验，见 [response-review.md](response-review.md)。新版APK的实体安装、Wi-Fi/移动流量切换、分享和软键盘仍单独记录，服务自身的测试不能替代这些项目。
 
 ```bash
 systemctl status tailscaled xinxin-web xinxin-backend
