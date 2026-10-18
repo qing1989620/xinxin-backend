@@ -12,8 +12,8 @@ Tailscale Serve 仅供同一私有网络内、被访问规则允许的设备使�
 
 ## 配置顺序
 
-1. 在服务器安装 Tailscale 官方 Ubuntu 22.04 包，启用 `tailscaled`。将资源限制文件安装到 `/etc/systemd/system/tailscaled.service.d/xinxin.conf`，执行 daemon-reload 和服务重启。
-2. 执行 `tailscale up --hostname=xinxin-cloud --accept-dns=false --accept-routes=false --ssh=false`，由主人打开一次性登录链接，把服务器加入自己的个人网络；不要将登录链接、认证密钥或 Tailscale 状态文件提交 Git。
+1. 在服务器安装Tailscale官方Ubuntu22.04包。先把 `deploy/allow-aliyun-tailnet-replies.sh` 安装为 `/usr/local/libexec/xinxin-aliyun-tailnet-replies`（root所有、0755），再把资源限制文件安装到 `/etc/systemd/system/tailscaled.service.d/xinxin.conf`，执行daemon-reload和服务重启。该helper只为现有阿里云内网连接的回包保留通路，详见下文兼容修复。
+2. 执行 `tailscale up --hostname=xinxin-cloud --accept-dns=false --accept-routes=false --ssh=false`，由主人打开一次性登录链接，把服务器加入自己的个人网络，再运行一次 `/usr/local/libexec/xinxin-aliyun-tailnet-replies`；之后服务每次启动自动应用。不要将登录链接、认证密钥或Tailscale状态文件提交Git。
 3. 手机安装官方 Android 客户端，登录同一账号，允许建立 VPN 连接。官方客户端要求 Android 8.0 或更新；Xinxin APK 本身最低 Android 7.0，两者要求分别检查。确认控制台只有自己的授权设备，按需要启用设备审批和最小访问规则。
 4. 前端的 `deploy/Caddyfile.tailnet` 部署为 `/etc/xinxin/Caddyfile`，先 validate 再 reload。网关只监听 `127.0.0.1:8088`，API仍为 `127.0.0.1:8000`，静态目录仅前端发布文件。原公网配置保存在服务器私人备份目录，切换失败可以恢复。
 5. 执行 `tailscale serve --bg --https=443 http://127.0.0.1:8088`，若提示启用 HTTPS，由主人在自己的控制台完成设置。用 `tailscale serve status` 核对显示为 tailnet only，并确认没有 Funnel。
@@ -28,7 +28,13 @@ Android 同一时间只有一个系统 VPN 通道。开启 Clash 会断开 Tails
 
 ## 验证和运行维护
 
-已校验私有网关配置、回环健康检查、任意私有Host静态页面、私人API401、no-store与回环绑定；实际私有origin和原生origin预检通过，无关origin被拒绝。前端10项测试通过。服务器已绑定主人账号，当前等待主人在Tailscale中启用Serve/HTTPS；另一私有设备的实际连通、APK新默认地址和实体手机换网仍待完成。前期真实云端Agent/备份恢复证据属于服务器内部验收，不能替代这些测试。
+首次HTTPS签发发现Tailscale的CGNAT防伪规则会拦截阿里云100.100网段的内部DNS回复，实际表现为ACME域名解析超时。已保留原DROP规则，只在检测到的默认网卡上，对 `100.100.2.0/24`（DNS/内网包镜像）和 `100.100.100.200/32`（实例元数据）允许ESTABLISHED/RELATED回包；不允许这些来源建立新连接。helper可重复执行，ExecStartPost在Tailscale服务启动后恢复规则。实际服务重启后DNS、Let's Encrypt目录和内网Ubuntu镜像均返回正常，规则保持两条且位于DROP前。服务器不接收tailnet DNS，私有域名的服务内验收显式使用节点映射中的私有IP，同时保留标准TLS域名和证书验证；手机应保留Tailscale默认MagicDNS。
+
+如果手动执行过 `tailscale down/up` 而没有重启服务，请再次运行helper，或使用 `systemctl restart tailscaled`。本次未修改云厂商DHCP DNS、默认路由或其他服务的防火墙。上游同类记录：[Tailscale issue 21249](https://github.com/tailscale/tailscale/issues/21249)。
+
+主人已完成账号绑定与Serve/HTTPS启用。私有网关配置、回环健康、私有Host静态页面、私人API401、no-store与回环绑定已核对；实际私有origin和原生origin预检通过，无关origin拒绝。通过节点映射中的真实Tailscale地址、保持标准TLS验证，完成了服务自身的HTTPS、短期验收会话、39项技能、上传幂等/认证下载、真实DeepSeek回复、SSE顺序与回放、任务幂等及新APK下载MIME/字节一致检查。验收临时会话已撤销，合成对话归档，本次成功验收创建的临时上传已删除。证据见 [private-mobile-runtime.json](private-mobile-runtime.json)。
+
+私有HTTPS由Let's Encrypt签发，服务已后台持久运行，未启用Funnel。新Release已预填实际私有HTTPS地址，沿用同一发布证书；前端10项测试、类型/生产构建、实际Release构建与v2/v3签名通过。仍待另一私有设备及实体手机的连接、Wi-Fi/移动流量切换、分享和软键盘验收，服务自身的测试不能替代这些项目。
 
 ```bash
 systemctl status tailscaled xinxin-web xinxin-backend

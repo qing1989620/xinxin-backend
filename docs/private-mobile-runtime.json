@@ -1,0 +1,72 @@
+{
+  "scope": "Server self HTTPS through Tailscale address; process resolves its own hostname from the authenticated node map. Standard TLS verification retained. Not a second-device or physical-phone test.",
+  "checks": {
+    "tailnet_only_serve": true,
+    "tls_hostname_and_chain": true,
+    "health": true,
+    "private_api_401": true,
+    "authenticated_ephemeral_session": true,
+    "skills_39": true,
+    "private_and_android_cors": true,
+    "upload_idempotency_and_authenticated_download": true,
+    "real_deepseek_response_after_dns_repair": true,
+    "sse_order_and_replay": true,
+    "run_idempotency": true,
+    "signed_apk_download_mime_and_bytes": true,
+    "aliyun_dns_and_package_mirror_after_restart": true,
+    "cgnat_protection_retained": true
+  },
+  "certificate": {
+    "issuer": [
+      [
+        [
+          "countryName",
+          "US"
+        ]
+      ],
+      [
+        [
+          "organizationName",
+          "Let's Encrypt"
+        ]
+      ],
+      [
+        [
+          "commonName",
+          "YE1"
+        ]
+      ]
+    ],
+    "notAfter": "Jan 15 23:06:17 2027 GMT",
+    "private_dns_name_redacted": true
+  },
+  "physical_phone_verified": false,
+  "wifi_cellular_roaming_verified": false,
+  "synthetic_model_run": {
+    "status": "completed",
+    "events": 11,
+    "permission": "read",
+    "result_present": true
+  },
+  "apk_sha256": "c183b0ed0734e82f147a641667cc09f8791abfcd235917fa7e1087f363cf1ab4",
+  "services": {
+    "tailscaled": {
+      "NRestarts": "0",
+      "MemoryCurrent": "13824000",
+      "ActiveState": "active",
+      "UnitFileState": "enabled"
+    },
+    "xinxin-web": {
+      "NRestarts": "0",
+      "MemoryCurrent": "46661632",
+      "ActiveState": "active",
+      "UnitFileState": "enabled"
+    },
+    "xinxin-backend": {
+      "NRestarts": "0",
+      "MemoryCurrent": "501403648",
+      "ActiveState": "active",
+      "UnitFileState": "enabled"
+    }
+  }
+}
