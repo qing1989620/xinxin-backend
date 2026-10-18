@@ -1,0 +1,48 @@
+{
+  "scope": "Synthetic full-permission Agent task over private HTTPS and selected root SSH. Own isolated directory and transient loopback HTTP unit only; no original user task replay or public site deployment.",
+  "physical_phone_verified_on_this_revision": false,
+  "checks": {
+    "execution_capabilities_advertised": true,
+    "real_ssh_write_before_deliberate_budget_stop": true,
+    "explicit_token_budget_accepted_without_422": true,
+    "real_model_resumed_from_tool_evidence": true,
+    "real_ssh_multistep_script_and_file_validation": true,
+    "transient_loopback_service_started_verified_and_stopped": true,
+    "sse_replay_exact": true,
+    "updated_signed_apk_download": true
+  },
+  "run": {
+    "status": "completed",
+    "permission": "full",
+    "model_calls": 10,
+    "total_tokens": 64304,
+    "max_total_tokens": 320000,
+    "tool_calls": 9,
+    "exceeded_old_hidden_50000_limit": true
+  },
+  "apk_sha256": "8fa52b8134111b4e0b711e0098a0677e9251466ecd535fc920b315f360ac3fe7",
+  "backend_code_revision": "5752342a5718a9061f2099dd2d9cce251ed06198",
+  "frontend_code_revision": "d60f764a74ded5613afb1e8b2b5029012a63c36a",
+  "post_run": {
+    "active_tasks": 0,
+    "synthetic_directory_removed": true,
+    "synthetic_unit_stopped": true,
+    "original_failed_records_preserved": true,
+    "verified_backup_before_activation": true,
+    "services": {
+      "xinxin-backend": {
+        "active": true,
+        "memory_current_bytes": 504012800
+      },
+      "xinxin-web": {
+        "active": true,
+        "memory_current_bytes": 56610816
+      },
+      "tailscaled": {
+        "active": true,
+        "memory_current_bytes": 12402688
+      }
+    },
+    "loopback_gateway_health": "ok"
+  }
+}

@@ -67,7 +67,7 @@ python -m pip install -e '.[test]'
 python -m pytest -q
 ```
 
-离线模型替身测试真实 Tina 工具循环，不消耗模型费用或连接真实服务器。[API 契约](docs/openapi.json)、[需求](docs/product-spec.md)、[来源许可](THIRD_PARTY.md)、[双轴审查](docs/code-review.md)。最新后端102项测试通过，包含执行预算、失败事实恢复、上下文保留和新旧客户端兼容，见 [执行续接规格](docs/execution-recovery-spec.md)。常规预算为16次调用、900秒；累计令牌可显式设置，未指定时按每次20000计算。云端真实DeepSeek、本机命令与产物、固定主机公钥SSH及附件读取另有验收证据。SMTP实际送达和图像转换仍待服务授权。
+离线模型替身测试真实 Tina 工具循环，不消耗模型费用或连接真实服务器。[API 契约](docs/openapi.json)、[需求](docs/product-spec.md)、[来源许可](THIRD_PARTY.md)、[双轴审查](docs/code-review.md)。最新后端102项测试通过，包含执行预算、失败事实恢复、上下文保留和新旧客户端兼容，见 [执行续接规格](docs/execution-recovery-spec.md) 与 [审查及云端实测](docs/execution-recovery-review.md)。常规预算为16次调用、900秒；累计令牌可显式设置，未指定时按每次20000计算。云端真实DeepSeek与SSH已完成10次模型调用、9次工具操作和64304累计令牌的隔离续接验收。SMTP实际送达和图像转换仍待服务授权。
 
 邮箱支持绑定单主人、验证码登录及找回密码，QQ SMTP 默认 465 SSL/TLS；授权码在设置中加密保存。没有授权码会明确提示不可用。6 位验证码 10 分钟有效、单次消费、最多 5 次失败、60 秒冷却与持久发送配额；重置密码撤销旧会话。
 
