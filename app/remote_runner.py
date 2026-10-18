@@ -152,7 +152,8 @@ def run(nonce, encoded, timeout):
             process.wait(timeout=2)
         except subprocess.TimeoutExpired:
             stopped = False
-        save_record(directory, {**record, "state": reason, "confirmed_stopped": stopped})
+        with command_lock(directory):
+            save_record(directory, {**record, "state": reason, "confirmed_stopped": stopped})
     return 124 if reason == "timeout" else 125 if reason == "cancelled" else process.returncode
 
 

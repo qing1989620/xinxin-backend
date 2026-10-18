@@ -39,8 +39,19 @@ def test_stop_confirmation_waits_for_a_launch_already_inside_the_critical_sectio
     monkeypatch.setattr(remote_runner.subprocess, "Popen", popen)
     monkeypatch.setattr(remote_runner, "sys", SimpleNamespace(stdout=None, stderr=None, stdin=SimpleNamespace(buffer=SimpleNamespace(read=lambda n: allow_launch.wait(3)))))
     result = {}
-    run = threading.Thread(target=lambda: result.update(code=remote_runner.run("fixture", base64.b64encode(b"synthetic").decode(), 30)))
-    stop = threading.Thread(target=lambda: (result.update(stop=remote_runner.cancel("fixture")), stop_returned.set()))
+    errors = []
+
+    def invoke(key, operation):
+        try:
+            result[key] = operation()
+        except BaseException as exc:
+            errors.append(exc)
+        finally:
+            if key == "stop":
+                stop_returned.set()
+
+    run = threading.Thread(target=invoke, args=("code", lambda: remote_runner.run("fixture", base64.b64encode(b"synthetic").decode(), 30)))
+    stop = threading.Thread(target=invoke, args=("stop", lambda: remote_runner.cancel("fixture")))
     run.start()
     assert launching.wait(2)
     stop.start()
@@ -49,6 +60,7 @@ def test_stop_confirmation_waits_for_a_launch_already_inside_the_critical_sectio
     run.join(3)
     stop.join(3)
     assert not run.is_alive() and not stop.is_alive()
+    assert not errors and result["code"] in {0, 125}
     assert launched == [True] and result["stop"]["confirmed"]
     assert remote_runner.run("fixture", base64.b64encode(b"synthetic").decode(), 30) == 125
     assert launched == [True]  # A late starter observes the durable cancellation marker.
