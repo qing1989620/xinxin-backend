@@ -3069,6 +3069,16 @@
             }
           },
           {
+            "name": "original",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "default": false,
+              "title": "Original"
+            }
+          },
+          {
             "name": "authorization",
             "in": "header",
             "required": false,

@@ -4,6 +4,7 @@ import base64
 import io
 import json
 import threading
+from functools import lru_cache
 from pathlib import Path
 
 import httpx
@@ -15,6 +16,7 @@ from .store import uid
 PLOT_LOCK = threading.Lock()
 
 
+@lru_cache(maxsize=1)
 def gallery():
     result = []
     root = ROOT / "resources" / "plot" / "gallery"

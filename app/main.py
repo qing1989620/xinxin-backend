@@ -33,7 +33,7 @@ from .config import (
 from .creative import gallery, plot_csv, transform_image
 from .conversations import deletion_preview, purge_conversation, batch_deletion_preview, purge_conversations
 from .files import FileLibrary, FileTooLarge, UploadConflict
-from .image_preview import image_preview
+from .image_preview import image_preview, SAFE_IMAGE_MIMES
 from .model import endpoint
 from .mail import MailCodes
 from .skills import SkillRouter
@@ -868,7 +868,7 @@ def create_app(config=None):
     @app.get("/api/v1/files/{ident}/preview", dependencies=[Depends(owner)])
     def preview_file(ident: str):
         row = library.get(ident)
-        if row["mime"] not in {"image/png", "image/jpeg", "image/webp", "image/gif"}:
+        if row["mime"] not in SAFE_IMAGE_MIMES:
             raise ValueError("此文件不支持图片预览，请下载原文件")
         # Revalidate existence and library boundary even on a cache hit.
         content = image_preview(library.path(ident), row["sha256"])
@@ -879,12 +879,10 @@ def create_app(config=None):
     @app.get("/api/v1/files/{ident}/download", dependencies=[Depends(owner)])
     def download(ident: str, inline: bool = False):
         row = library.get(ident)
-        safe_image = row["mime"] in {
-            "image/png",
-            "image/jpeg",
-            "image/webp",
-            "image/gif",
-        }
+        safe_image = row["mime"] in SAFE_IMAGE_MIMES
+        if inline and safe_image:
+            # Older installed clients use this URL for display; avoid sending megabyte originals.
+            return preview_file(ident)
         return FileResponse(
             library.path(ident),
             media_type=row["mime"] if safe_image else "application/octet-stream",
@@ -1052,11 +1050,19 @@ def create_app(config=None):
         return gallery()
 
     @app.get("/api/v1/tools/gallery/{name}", dependencies=[Depends(owner)])
-    def gallery_image(name: str):
+    def gallery_image(name: str, original: bool = False):
         if name not in {row["id"] for row in gallery()}:
             raise HTTPException(404, "样图不存在")
+        path = ROOT / "resources/plot/gallery" / (name + ".png")
+        if not path.resolve().is_relative_to((ROOT / "resources/plot/gallery").resolve()):
+            raise HTTPException(404, "样图不存在")
+        if not original:
+            stat = path.stat()
+            return Response(image_preview(path, f"{stat.st_mtime_ns}:{stat.st_size}"), media_type="image/webp", headers={
+                "Cache-Control": "private, max-age=3600", "X-Content-Type-Options": "nosniff",
+            })
         return FileResponse(
-            ROOT / "resources/plot/gallery" / (name + ".png"),
+            path,
             media_type="image/png",
             headers={"Cache-Control": "private, max-age=3600"},
         )
