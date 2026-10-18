@@ -45,4 +45,6 @@ tailscale netcheck
 
 服务重启不等于重新注册设备；保留 `/var/lib/tailscale`，丢失时在主人账号下重新绑定。该目录属于网络凭据，不能放入 Xinxin 静态目录或 Git。Xinxin 私人数据与定时备份继续使用 `/var/lib/xinxin` 和 `/var/backups/xinxin`，详见 [云端恢复](cloud-deployment.md)。服务器备份目前没有异地副本。
 
+节点密钥到期时需要主人重新授权。长期无人值守可在自己的Tailscale控制台Machines页，为这台可信服务器调整密钥到期策略；手机策略单独保留。双轴审查和复验见 [private-mobile-review.md](private-mobile-review.md)。
+
 参考：[Android 安装](https://tailscale.com/docs/install/android)、[Serve 私有 HTTPS](https://tailscale.com/docs/features/tailscale-serve)、[切换网络时地址保持](https://tailscale.com/docs/concepts/tailscale-ip-addresses)、[其他 VPN 兼容限制](https://tailscale.com/docs/reference/faq/other-vpns)。
