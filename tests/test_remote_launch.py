@@ -34,6 +34,7 @@ def test_stop_confirmation_waits_for_a_launch_already_inside_the_critical_sectio
     # No real process, stdin, signals or /tmp access in this portable race fixture.
     monkeypatch.setattr(remote_runner, "job_directory", lambda nonce: tmp_path)
     monkeypatch.setattr(remote_runner, "command_lock", command_lock)
+    monkeypatch.setattr(remote_runner, "connection_closed", lambda: False)
     monkeypatch.setattr(remote_runner, "process_identity", lambda pid: "same-process")
     monkeypatch.setattr(remote_runner, "stop_group", lambda record: True)
     monkeypatch.setattr(remote_runner.subprocess, "Popen", popen)
@@ -76,12 +77,6 @@ def test_failed_process_registration_cleans_child_before_unlock_and_never_falsel
         with lock:
             yield
 
-    class NoThread:
-        def __init__(self, **kwargs):
-            pass
-        def start(self):
-            pass
-
     def stop(record, *, owned_child=False):
         assert lock.locked()
         assert owned_child
@@ -93,7 +88,7 @@ def test_failed_process_registration_cleans_child_before_unlock_and_never_falsel
 
     monkeypatch.setattr(remote_runner, "job_directory", lambda nonce: tmp_path)
     monkeypatch.setattr(remote_runner, "command_lock", command_lock)
-    monkeypatch.setattr(remote_runner, "threading", SimpleNamespace(Thread=NoThread, Event=threading.Event))
+    monkeypatch.setattr(remote_runner, "connection_closed", lambda: False)
     monkeypatch.setattr(remote_runner, "process_identity", lambda pid: "same-process")
     monkeypatch.setattr(remote_runner.subprocess, "Popen", lambda *args, **kwargs: SimpleNamespace(pid=123, wait=lambda timeout: 0))
     monkeypatch.setattr(remote_runner, "save_record", failed_save)
@@ -111,19 +106,13 @@ def test_failed_proc_identity_read_still_signals_and_reaps_the_owned_child(tmp_p
     def command_lock(directory):
         yield
 
-    class NoThread:
-        def __init__(self, **kwargs):
-            pass
-        def start(self):
-            pass
-
     def failed_identity(pid):
         calls.append("identity")
         raise OSError("synthetic proc read failure")
 
     monkeypatch.setattr(remote_runner, "job_directory", lambda nonce: tmp_path)
     monkeypatch.setattr(remote_runner, "command_lock", command_lock)
-    monkeypatch.setattr(remote_runner, "threading", SimpleNamespace(Thread=NoThread, Event=threading.Event))
+    monkeypatch.setattr(remote_runner, "connection_closed", lambda: False)
     monkeypatch.setattr(remote_runner, "process_identity", failed_identity)
     monkeypatch.setattr(remote_runner, "living_group", lambda group: False)
     monkeypatch.setattr(remote_runner, "signal", SimpleNamespace(SIGTERM=15, SIGKILL=9))

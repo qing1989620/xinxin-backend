@@ -6,10 +6,10 @@ import json
 import os
 from pathlib import Path
 import re
+import select
 import signal
 import subprocess
 import sys
-import threading
 import time
 
 
@@ -99,20 +99,19 @@ def cancel(nonce):
     return {"confirmed": stopped, "state": "stopped" if stopped else "unconfirmed"}
 
 
+def connection_closed():
+    # Poll the raw SSH control descriptor. A blocked daemon BufferedReader causes
+    # CPython to abort at shutdown, even after the command itself succeeded.
+    descriptor = sys.stdin.fileno()
+    ready, _, _ = select.select([descriptor], [], [], 0)
+    return bool(ready) and not os.read(descriptor, 1)
+
+
 def run(nonce, encoded, timeout):
     directory = job_directory(nonce)
-    disconnected = threading.Event()
-
-    def watch_connection():
-        try:
-            sys.stdin.buffer.read(1)
-        finally:
-            disconnected.set()
-
-    threading.Thread(target=watch_connection, daemon=True).start()
     command = base64.b64decode(encoded, validate=True).decode("utf-8")
     with command_lock(directory):
-        if disconnected.is_set() or (directory / "cancel").exists():
+        if connection_closed() or (directory / "cancel").exists():
             return 125
         intent = directory / "launching"
         intent.touch(mode=0o600)
@@ -138,7 +137,7 @@ def run(nonce, encoded, timeout):
     reason = "finished"
     try:
         while process.poll() is None:
-            if disconnected.is_set() or (directory / "cancel").exists():
+            if connection_closed() or (directory / "cancel").exists():
                 reason = "cancelled"
                 break
             if time.monotonic() >= deadline:
@@ -146,7 +145,7 @@ def run(nonce, encoded, timeout):
                 break
             time.sleep(0.04)
     finally:
-        if disconnected.is_set() or (directory / "cancel").exists():
+        if connection_closed() or (directory / "cancel").exists():
             reason = "cancelled"
         stopped = stop_group(record)
         try:
