@@ -9,12 +9,20 @@ import sqlite3
 from .store import now, uid
 
 
+def private_directory(store, name):
+    root = store.directory.resolve()
+    path = store.directory / name
+    if path.is_symlink() or path.is_junction() or not path.resolve().is_relative_to(root):
+        raise ValueError("私有数据子目录路径异常，未删除")
+    return path.resolve()
+
+
 def workspace_path(store, ident):
     if not re.fullmatch(r"[a-f0-9]{32}", ident):
         raise ValueError("对话标识无效")
-    root = (store.directory / "workspaces").resolve()
+    root = private_directory(store, "workspaces")
     target = root / ident
-    if target.is_symlink() or not target.resolve().is_relative_to(root):
+    if target.is_symlink() or target.is_junction() or not target.resolve().is_relative_to(root):
         raise ValueError("对话工作区路径异常，未删除")
     return root, target
 
@@ -63,9 +71,10 @@ def shared_file(db, ident, conversation):
 def purge_conversation(store, library, ident):
     root, workspace = workspace_path(store, ident)
     preview = deletion_preview(store, ident)
-    trash_root = (store.directory / ".deletion-trash").resolve()
-    if not trash_root.is_relative_to(store.directory.resolve()):
-        raise ValueError("清理暂存路径异常")
+    trash_root = private_directory(store, ".deletion-trash")
+    files_root = private_directory(store, "files")
+    if library.root.resolve() != files_root:
+        raise ValueError("文件库路径异常，未删除")
     trash_root.mkdir(mode=0o700, exist_ok=True)
     trash = trash_root / (ident + "-" + uid())
     trash.mkdir(mode=0o700)
@@ -89,7 +98,12 @@ def purge_conversation(store, library, ident):
                 if shared_file(db, file["id"], ident):
                     retained += 1
                     continue
+                raw_path = Path(db.execute("SELECT path FROM files WHERE id=?", (file["id"],)).fetchone()["path"])
+                if raw_path.is_symlink() or raw_path.is_junction():
+                    raise ValueError("生成文件路径异常，未删除")
                 source = library.path(file["id"])
+                if not source.is_relative_to(files_root):
+                    raise ValueError("生成文件路径越界，未删除")
                 destination = trash / (file["id"] + source.suffix)
                 source.rename(destination)
                 moved.append((destination, source))
@@ -101,6 +115,7 @@ def purge_conversation(store, library, ident):
             for table in ("run_context", "run_plan", "messages", "runs"):
                 db.execute(f"DELETE FROM {table} WHERE conversation_id=?", (ident,))
             db.execute("DELETE FROM conversations WHERE id=?", (ident,))
+            db.execute("DELETE FROM conversation_options WHERE conversation_id=?", (ident,))
         committed = True
     except BaseException:
         for source, destination in reversed(moved):
@@ -109,7 +124,7 @@ def purge_conversation(store, library, ident):
         raise
     finally:
         cleanup_pending = False
-        if (committed or not any(source.exists() for source, _ in moved)) and trash.exists() and not trash.is_symlink() and trash.resolve().parent == trash_root:
+        if (committed or not any(source.exists() for source, _ in moved)) and trash.exists() and not trash.is_symlink() and not trash.is_junction() and trash.resolve().parent == private_directory(store, ".deletion-trash"):
             try:
                 shutil.rmtree(trash)
             except OSError:

@@ -1,1 +1,2 @@
+resources/skills/packages/** -text
 resources/deepseek-tokenizer/* -text

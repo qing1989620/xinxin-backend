@@ -50,6 +50,7 @@ class ModelGateway:
         max_calls=DEFAULT_MODEL_CALLS,
         max_tokens=None,
         transport=None,
+        context_window_tokens=CONTEXT_WINDOW_TOKENS,
     ):
         self.url, self.model, self.key = endpoint(url), model, key
         self.record_usage, self.cancelled = record_usage, cancelled
@@ -61,6 +62,7 @@ class ModelGateway:
         self.request_tokens = 0
         self.transport = transport
         self.context_tokens = 0
+        self.context_window_tokens = context_window_tokens
 
     async def apredict(self, messages, tools=None, stream=False, **kwargs):
         if self.cancelled.is_set():
@@ -80,8 +82,8 @@ class ModelGateway:
         if tools:
             payload["tools"] = tools
         self.context_tokens = token_count(encode(payload)) + 1024
-        if self.context_tokens + payload["max_tokens"] > CONTEXT_WINDOW_TOKENS:
-            raise RuntimeError("本次请求超过1M上下文窗口；历史仍保存在当前对话，请先压缩或分批处理。")
+        if self.context_tokens + payload["max_tokens"] > self.context_window_tokens:
+            raise RuntimeError("本次请求超过当前会话的上下文档位；完整历史仍保存在对话，请提高档位、压缩或分批处理。")
         self.record_usage(self.usage())
         if stream:
             payload["stream_options"] = {"include_usage": True}
@@ -131,7 +133,7 @@ class ModelGateway:
             "total_tokens": self.tokens,
             "max_calls": self.max_calls,
             "max_total_tokens": self.max_tokens,
-            "context_window_tokens": CONTEXT_WINDOW_TOKENS,
+            "context_window_tokens": self.context_window_tokens,
             "context_tokens_estimate": self.context_tokens,
         }
 

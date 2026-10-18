@@ -1,6 +1,7 @@
 """A per-command remote process group, controlled through SSH stdin and a nonce."""
 
 import base64
+from contextlib import contextmanager
 import json
 import os
 from pathlib import Path
@@ -68,14 +69,27 @@ def save_record(directory, record):
     temporary.replace(directory / "process.json")
 
 
+@contextmanager
+def command_lock(directory):
+    # Both SSH processes serialize launch/registration and stop confirmation.
+    import fcntl
+    descriptor = os.open(directory / ".lock", os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
+    try:
+        fcntl.flock(descriptor, fcntl.LOCK_EX)
+        yield
+    finally:
+        os.close(descriptor)
+
+
 def cancel(nonce):
     directory = job_directory(nonce)
-    (directory / "cancel").touch(mode=0o600)
-    path = directory / "process.json"
-    if not path.exists():
-        # A late starter observes the marker before launching its child.
-        return {"confirmed": True, "state": "not_started"}
-    record = json.loads(path.read_text())
+    with command_lock(directory):
+        (directory / "cancel").touch(mode=0o600)
+        path = directory / "process.json"
+        if not path.exists():
+            # The launch check holds the same lock, so a late starter cannot launch.
+            return {"confirmed": True, "state": "not_started"}
+        record = json.loads(path.read_text())
     if record.get("state") != "running" and record.get("confirmed_stopped"):
         return {"confirmed": True, "state": "already_stopped"}
     stopped = stop_group(record)
@@ -93,15 +107,16 @@ def run(nonce, encoded, timeout):
             disconnected.set()
 
     threading.Thread(target=watch_connection, daemon=True).start()
-    if disconnected.is_set() or (directory / "cancel").exists():
-        return 125
     command = base64.b64decode(encoded, validate=True).decode("utf-8")
-    process = subprocess.Popen(
-        ["/bin/sh", "-c", command], stdin=subprocess.DEVNULL,
-        stdout=sys.stdout, stderr=sys.stderr, start_new_session=True,
-    )
-    record = {"pid": process.pid, "identity": process_identity(process.pid), "state": "running"}
-    save_record(directory, record)
+    with command_lock(directory):
+        if disconnected.is_set() or (directory / "cancel").exists():
+            return 125
+        process = subprocess.Popen(
+            ["/bin/sh", "-c", command], stdin=subprocess.DEVNULL,
+            stdout=sys.stdout, stderr=sys.stderr, start_new_session=True,
+        )
+        record = {"pid": process.pid, "identity": process_identity(process.pid), "state": "running"}
+        save_record(directory, record)
     deadline = time.monotonic() + timeout
     reason = "finished"
     try:

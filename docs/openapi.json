@@ -770,6 +770,69 @@
         }
       }
     },
+    "/api/v1/conversations/{ident}/context": {
+      "put": {
+        "summary": "Change Conversation Context",
+        "operationId": "change_conversation_context_api_v1_conversations__ident__context_put",
+        "parameters": [
+          {
+            "name": "ident",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Ident"
+            }
+          },
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ConversationContext"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/conversations/{ident}/deletion-preview": {
       "get": {
         "summary": "Preview Conversation Deletion",
@@ -3266,6 +3329,25 @@
         "type": "object",
         "title": "Conversation"
       },
+      "ConversationContext": {
+        "properties": {
+          "context_window_tokens": {
+            "type": "integer",
+            "enum": [
+              80000,
+              300000,
+              1048576
+            ],
+            "title": "Context Window Tokens"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "context_window_tokens"
+        ],
+        "title": "ConversationContext"
+      },
       "EmailLogin": {
         "properties": {
           "email": {
@@ -3657,6 +3739,22 @@
               }
             ],
             "title": "Max Total Tokens"
+          },
+          "context_window_tokens": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "enum": [
+                  80000,
+                  300000,
+                  1048576
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Context Window Tokens"
           },
           "request_key": {
             "type": "string",

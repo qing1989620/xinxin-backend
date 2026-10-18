@@ -1,4 +1,8 @@
 import json
+import os
+import subprocess
+
+import pytest
 
 from app.store import uid
 from test_platform import client
@@ -71,3 +75,36 @@ def test_invalid_artifact_path_rolls_back_workspace_and_database(client, tmp_pat
         assert not client.app.state.manager.maintenance.is_set()
     finally:
         outside.unlink()
+
+
+@pytest.mark.parametrize("name", ["workspaces", "files", ".deletion-trash"])
+def test_deletion_rejects_linked_private_roots_without_touching_external_data(client, tmp_path, name):
+    store = client.app.state.store
+    cid = client.post("/api/v1/conversations", json={"title": "linked-root fixture"}).json()["id"]
+    outside = tmp_path.parent / ("external-" + uid())
+    (outside / cid).mkdir(parents=True)
+    sentinel = outside / cid / "retain.txt"
+    sentinel.write_text("external data remains")
+    link = store.directory / name
+    if link.exists():
+        link.rmdir()  # The isolated fixture has an empty files directory only.
+    try:
+        link.symlink_to(outside, target_is_directory=True)
+    except OSError:
+        if os.name != "nt":
+            raise
+        quote = lambda value: str(value).replace("'", "''")
+        subprocess.run([
+            "powershell.exe", "-NoProfile", "-NonInteractive", "-Command",
+            f"New-Item -ItemType Junction -Path '{quote(link)}' -Target '{quote(outside)}' | Out-Null",
+        ], check=True, capture_output=True)
+    try:
+        response = client.delete(f"/api/v1/conversations/{cid}/permanent")
+        assert response.status_code == 400
+        assert sentinel.read_text() == "external data remains"
+        assert store.one("SELECT id FROM conversations WHERE id=?", (cid,))
+    finally:
+        if link.is_symlink():
+            link.unlink()
+        elif link.is_junction():
+            os.rmdir(link)  # Removes the junction itself, never the target tree.

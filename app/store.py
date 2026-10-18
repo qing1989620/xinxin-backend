@@ -45,6 +45,7 @@ class Store:
                 CREATE INDEX IF NOT EXISTS context_conversation ON run_context(conversation_id,updated);
                 CREATE TABLE IF NOT EXISTS run_plan(run_id TEXT PRIMARY KEY,conversation_id TEXT NOT NULL,steps TEXT NOT NULL,updated INTEGER NOT NULL);
                 CREATE TABLE IF NOT EXISTS message_runs(message_id TEXT PRIMARY KEY,run_id TEXT NOT NULL);
+                CREATE TABLE IF NOT EXISTS conversation_options(conversation_id TEXT PRIMARY KEY,context_window_tokens INTEGER NOT NULL);
                 CREATE INDEX IF NOT EXISTS messages_conversation ON messages(conversation_id,created);
                 CREATE INDEX IF NOT EXISTS records_kind ON records(kind,updated);
                 CREATE INDEX IF NOT EXISTS runs_created ON runs(created);
@@ -80,6 +81,10 @@ class Store:
                 db.execute(
                     "ALTER TABLE runs ADD COLUMN max_total_tokens INTEGER NOT NULL DEFAULT 50000"
                 )
+            if "context_window_tokens" not in {
+                row["name"] for row in db.execute("PRAGMA table_info(runs)")
+            }:
+                db.execute("ALTER TABLE runs ADD COLUMN context_window_tokens INTEGER")
             if "archived" not in {
                 row["name"] for row in db.execute("PRAGMA table_info(conversations)")
             }:

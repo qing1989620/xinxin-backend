@@ -100,9 +100,14 @@ class RunInput(Input):
     max_calls: int = Field(default=DEFAULT_MODEL_CALLS, ge=1, le=128)
     max_seconds: int = Field(default=DEFAULT_TASK_SECONDS, ge=10, le=7200)
     max_total_tokens: int | None = Field(default=None, ge=5000, le=100000000)
+    context_window_tokens: Literal[80000, 300000, 1048576] | None = None
     request_key: str = Field(min_length=8, max_length=100)
     file_ids: list[str] = Field(default_factory=list, max_length=10)
     allow_memory: bool = False
+
+
+class ConversationContext(Input):
+    context_window_tokens: Literal[80000, 300000, 1048576]
 
 
 class Record(Input):
@@ -442,8 +447,10 @@ def create_app(config=None):
     @app.get("/api/v1/conversations/{ident}", dependencies=[Depends(owner)])
     def conversation(ident: str):
         row = require_row("conversations", ident)
+        choice = store.one("SELECT context_window_tokens FROM conversation_options WHERE conversation_id=?", (ident,))
         return {
             **row,
+            "context_window_tokens": choice["context_window_tokens"] if choice else CONTEXT_WINDOW_TOKENS,
             "messages": store.all(
                 "SELECT m.*,mr.run_id FROM messages m LEFT JOIN message_runs mr "
                 "ON mr.message_id=m.id WHERE m.conversation_id=? ORDER BY m.created,m.rowid",
@@ -454,6 +461,19 @@ def create_app(config=None):
                 (ident,),
             ),
         }
+
+    @app.put("/api/v1/conversations/{ident}/context", dependencies=[Depends(owner)])
+    async def change_conversation_context(ident: str, body: ConversationContext):
+        require_row("conversations", ident)
+        if manager.maintenance.is_set() or store.one(
+            "SELECT id FROM runs WHERE conversation_id=? AND status IN ('queued','running','cancelling') LIMIT 1", (ident,),
+        ):
+            raise HTTPException(409, "请等待本轮结束后再切换上下文档位")
+        store.execute(
+            "INSERT INTO conversation_options VALUES(?,?) ON CONFLICT(conversation_id) "
+            "DO UPDATE SET context_window_tokens=excluded.context_window_tokens", (ident, body.context_window_tokens),
+        )
+        return {"context_window_tokens": body.context_window_tokens}
 
     @app.get("/api/v1/conversations/{ident}/deletion-preview", dependencies=[Depends(owner)])
     async def preview_conversation_deletion(ident: str):
@@ -543,6 +563,7 @@ def create_app(config=None):
             body.request_key,
             allow_memory=body.allow_memory,
             max_total_tokens=body.max_total_tokens,
+            context_window_tokens=body.context_window_tokens,
         )
 
     @app.get("/api/v1/runs/{ident}", dependencies=[Depends(owner)])
@@ -922,6 +943,7 @@ def create_app(config=None):
             "context_window_tokens": CONTEXT_WINDOW_TOKENS,
             "context_input_budget_tokens": CONTEXT_INPUT_TOKENS,
             "context_counting": "DeepSeek-V4.1 BPE with protocol/output reserve",
+            "context_tiers": [{"label": "80K", "tokens": 80000}, {"label": "300K", "tokens": 300000}, {"label": "1000K", "tokens": CONTEXT_WINDOW_TOKENS}],
             "execution_defaults": {
                 "max_calls": DEFAULT_MODEL_CALLS, "max_seconds": DEFAULT_TASK_SECONDS,
                 "max_total_tokens": DEFAULT_MODEL_CALLS * TOKENS_PER_MODEL_CALL,
@@ -932,6 +954,7 @@ def create_app(config=None):
                 "context_checkpoints": True, "command_progress": True,
                 "managed_ssh_cancellation": True,
                 "conversation_delete": True,
+                "context_tiers": True,
             },
         }
 

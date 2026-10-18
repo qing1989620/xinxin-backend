@@ -13,7 +13,7 @@ from pathlib import Path
 
 from .config import (
     ROOT, DEFAULT_MODEL_CALLS, DEFAULT_TASK_SECONDS, TOKENS_PER_MODEL_CALL,
-    CONTEXT_INPUT_TOKENS, CONTEXT_WINDOW_TOKENS,
+    CONTEXT_INPUT_TOKENS, CONTEXT_WINDOW_TOKENS, CONTEXT_TIERS,
 )
 from .execution import Policy, run_command, remote_command
 from .model import ModelGateway, ModelBudgetExceeded
@@ -106,7 +106,8 @@ class PlatformExecutor(ToolsExecutor):
                         if self.on_cancel_result:
                             self.on_cancel_result(name, self.sanitize(value))
                     except (Exception, asyncio.CancelledError):
-                        self.remote_stop_unconfirmed = True
+                        if name in {"run_remote_command", "deploy_repository"}:
+                            self.remote_stop_unconfirmed = True
 
                 pending.add_done_callback(record_cancel_result)
                 result = await asyncio.shield(pending)
@@ -262,6 +263,7 @@ class TaskManager:
         operation_input=None,
         allow_memory=False,
         max_total_tokens=None,
+        context_window_tokens=None,
     ):
         if self.maintenance.is_set():
             raise ValueError("正在清理对话与整理存储，请稍后提交任务")
@@ -271,6 +273,10 @@ class TaskManager:
         ]
         if max_total_tokens is not None:
             signature_input.append({"max_total_tokens": max_total_tokens})
+        if context_window_tokens is not None:
+            if context_window_tokens not in CONTEXT_TIERS:
+                raise ValueError("上下文档位只能选择80K、300K或1000K")
+            signature_input.append({"context_window_tokens": context_window_tokens})
         signature = hashlib.sha256(
             encode(signature_input).encode()
         ).hexdigest()
@@ -308,9 +314,16 @@ class TaskManager:
         )
         if active:
             raise ValueError("此对话已有运行中的任务，请等待或取消")
+        if context_window_tokens is not None:
+            self.store.execute(
+                "INSERT INTO conversation_options VALUES(?,?) ON CONFLICT(conversation_id) "
+                "DO UPDATE SET context_window_tokens=excluded.context_window_tokens", (cid, context_window_tokens),
+            )
+        choice = self.store.one("SELECT context_window_tokens FROM conversation_options WHERE conversation_id=?", (cid,))
+        context_window_tokens = choice["context_window_tokens"] if choice else CONTEXT_WINDOW_TOKENS
         ident = uid()
         self.store.execute(
-            "INSERT INTO runs(id,conversation_id,task,status,permission,server_id,max_calls,max_seconds,created,updated,request_key,request_signature,allow_memory,max_total_tokens) VALUES(?,?,?,'queued',?,?,?,?,?,?,?,?,?,?)",
+            "INSERT INTO runs(id,conversation_id,task,status,permission,server_id,max_calls,max_seconds,created,updated,request_key,request_signature,allow_memory,max_total_tokens,context_window_tokens) VALUES(?,?,?,'queued',?,?,?,?,?,?,?,?,?,?,?)",
             (
                 ident,
                 cid,
@@ -325,6 +338,7 @@ class TaskManager:
                 signature,
                 int(allow_memory),
                 max_total_tokens if max_total_tokens is not None else max_calls * TOKENS_PER_MODEL_CALL,
+                context_window_tokens,
             ),
         )
         self.store.message(cid, "user", task, run_id=ident)
@@ -737,6 +751,7 @@ class TaskManager:
                         run["max_calls"],
                         max_tokens=run["max_total_tokens"],
                         transport=self.model_transport,
+                        context_window_tokens=run["context_window_tokens"],
                     )
                     tools, events = self._tools(run, flag), AgentEvents()
 
@@ -789,6 +804,7 @@ class TaskManager:
                     )
                     context = TaskContext(
                         run["task"],
+                        max_length=run["context_window_tokens"] - 32768,
                         checkpoint=lambda messages: save_context(self.store, run, messages, self.redact),
                         on_compact=lambda details: self.store.event(ident, "context.compacted", details),
                     )
@@ -807,7 +823,7 @@ class TaskManager:
                     if history:
                         self.store.event(ident, "context.checkpoint_restored", {
                             "messages": len(history), "from_checkpoint": restored,
-                            "context_window_tokens": CONTEXT_WINDOW_TOKENS,
+                            "context_window_tokens": run["context_window_tokens"],
                         })
                     answered = False
                     async for chunk in agent.apredict(instruction=run["task"]):
