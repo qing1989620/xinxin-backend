@@ -34,10 +34,10 @@ def living_group(group):
     return False
 
 
-def stop_group(record):
+def stop_group(record, *, owned_child=False):
     group = record["pid"]
     identity = process_identity(group)
-    if identity is not None and identity != record["identity"]:
+    if identity is not None and identity != record["identity"] and not owned_child:
         raise RuntimeError("Remote process identity changed; refusing to signal it")
     for sig, wait in ((signal.SIGTERM, 0.4), (signal.SIGKILL, 1.5)):
         try:
@@ -87,6 +87,8 @@ def cancel(nonce):
         (directory / "cancel").touch(mode=0o600)
         path = directory / "process.json"
         if not path.exists():
+            if (directory / "launching").exists():
+                return {"confirmed": False, "state": "launch_registration_unknown"}
             # The launch check holds the same lock, so a late starter cannot launch.
             return {"confirmed": True, "state": "not_started"}
         record = json.loads(path.read_text())
@@ -111,12 +113,26 @@ def run(nonce, encoded, timeout):
     with command_lock(directory):
         if disconnected.is_set() or (directory / "cancel").exists():
             return 125
+        intent = directory / "launching"
+        intent.touch(mode=0o600)
         process = subprocess.Popen(
             ["/bin/sh", "-c", command], stdin=subprocess.DEVNULL,
             stdout=sys.stdout, stderr=sys.stderr, start_new_session=True,
         )
-        record = {"pid": process.pid, "identity": process_identity(process.pid), "state": "running"}
-        save_record(directory, record)
+        record = {"pid": process.pid, "identity": None, "state": "running"}
+        try:
+            record["identity"] = process_identity(process.pid)
+            save_record(directory, record)
+        except BaseException:
+            # Registration failure must not release an untracked live child.
+            stopped = stop_group(record, owned_child=True)
+            try:
+                process.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                stopped = False
+            if stopped:
+                intent.unlink(missing_ok=True)
+            raise
     deadline = time.monotonic() + timeout
     reason = "finished"
     try:

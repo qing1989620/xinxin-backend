@@ -3,6 +3,8 @@ from contextlib import contextmanager
 import threading
 from types import SimpleNamespace
 
+import pytest
+
 from app import remote_runner
 
 
@@ -50,3 +52,41 @@ def test_stop_confirmation_waits_for_a_launch_already_inside_the_critical_sectio
     assert launched == [True] and result["stop"]["confirmed"]
     assert remote_runner.run("fixture", base64.b64encode(b"synthetic").decode(), 30) == 125
     assert launched == [True]  # A late starter observes the durable cancellation marker.
+
+
+@pytest.mark.parametrize("cleanup_confirmed", [True, False])
+def test_failed_process_registration_cleans_child_before_unlock_and_never_falsely_confirms(tmp_path, monkeypatch, cleanup_confirmed):
+    cleanup = []
+    lock = threading.Lock()
+
+    @contextmanager
+    def command_lock(directory):
+        with lock:
+            yield
+
+    class NoThread:
+        def __init__(self, **kwargs):
+            pass
+        def start(self):
+            pass
+
+    def stop(record, *, owned_child=False):
+        assert lock.locked()
+        assert owned_child
+        cleanup.append(record["pid"])
+        return cleanup_confirmed
+
+    def failed_save(*args):
+        raise OSError("synthetic disk failure")
+
+    monkeypatch.setattr(remote_runner, "job_directory", lambda nonce: tmp_path)
+    monkeypatch.setattr(remote_runner, "command_lock", command_lock)
+    monkeypatch.setattr(remote_runner, "threading", SimpleNamespace(Thread=NoThread, Event=threading.Event))
+    monkeypatch.setattr(remote_runner, "process_identity", lambda pid: "same-process")
+    monkeypatch.setattr(remote_runner.subprocess, "Popen", lambda *args, **kwargs: SimpleNamespace(pid=123, wait=lambda timeout: 0))
+    monkeypatch.setattr(remote_runner, "save_record", failed_save)
+    monkeypatch.setattr(remote_runner, "stop_group", stop)
+    with pytest.raises(OSError, match="disk failure"):
+        remote_runner.run("fixture", base64.b64encode(b"synthetic").decode(), 30)
+    assert cleanup == [123]
+    assert remote_runner.cancel("fixture")["confirmed"] is cleanup_confirmed
