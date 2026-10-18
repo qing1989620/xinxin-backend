@@ -20,6 +20,12 @@ def metered_frames(*, total=9500, **kwargs):
     return frames(**kwargs).replace('"total_tokens": 12', f'"total_tokens": {total}')
 
 
+def test_settings_advertises_execution_capabilities_without_secrets(client):
+    data = client.get("/api/v1/settings").json()
+    assert data["capabilities"] == {"run_token_budget": True, "run_recovery": True}
+    assert "model_api_key" not in data
+
+
 def test_multistep_tools_can_finish_after_the_old_hidden_token_limit(client):
     client.put("/api/v1/settings", json={"model_api_key": "offline-budget-key"})
     calls = 0

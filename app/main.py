@@ -869,6 +869,7 @@ def create_app(config=None):
                 store.directory / "skills/scenes-gathered-zine-v1-3/SKILL.md"
             ).exists(),
             "registration": "disabled",
+            "capabilities": {"run_token_budget": True, "run_recovery": True},
         }
 
     @app.put("/api/v1/settings", dependencies=[Depends(owner)])
