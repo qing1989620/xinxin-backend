@@ -530,6 +530,103 @@ def test_progress_survives_replay_but_is_not_saved_as_the_final_answer(
         assert "最终答复" in run["error"]
 
 
+@pytest.mark.parametrize("stage", ["tool-fragment", "direct-answer", "after-tool"])
+def test_disconnected_model_drafts_remain_progress_not_final_history(client, stage):
+    client.put("/api/v1/settings", json={"model_api_key": "offline-disconnect-key"})
+    calls = 0
+    partial = "我先查看工作区。" if stage == "tool-fragment" else "还未完整的答复"
+
+    def provider(request):
+        nonlocal calls
+        calls += 1
+        if stage == "after-tool" and calls == 1:
+            payload = frames(
+                content="我先检查一下。",
+                tool={"name": "list_files", "arguments": {}},
+            )
+        else:
+            deltas = [{"content": partial}]
+            if stage == "tool-fragment":
+                deltas.append(
+                    {
+                        "tool_calls": [
+                            {
+                                "index": 0,
+                                "id": "incomplete-call",
+                                "function": {"name": "list_files", "arguments": "{"},
+                            }
+                        ]
+                    }
+                )
+            payload = "".join(
+                "data: "
+                + json.dumps({"choices": [{"delta": delta, "finish_reason": None}]})
+                + "\n\n"
+                for delta in deltas
+            )
+        return httpx.Response(200, content=payload.encode())
+
+    client.app.state.manager.model_transport = httpx.MockTransport(provider)
+    response = client.post(
+        "/api/v1/runs",
+        json={
+            "task": "合成断流验收",
+            "permission": "read",
+            "max_calls": 3,
+            "request_key": "disconnect-" + stage,
+        },
+    )
+    run = wait_run(client, response.json()["id"])
+    assert run["status"] == "failed" and "模型输出未完整结束" in run["error"]
+    assert run["result"] == ""
+    events = client.app.state.store.events(run["id"])
+    progress = [event for event in events if event["kind"] == "assistant.progress"]
+    assert progress[-1]["data"]["text"] == partial
+    tools = [event for event in events if event["kind"] == "tool.started"]
+    assert len(tools) == (1 if stage == "after-tool" else 0)
+    history = client.get("/api/v1/conversations/" + run["conversation_id"]).json()
+    assert not any(message["role"] == "assistant" for message in history["messages"])
+
+
+def test_cancelled_model_draft_remains_available_as_progress_only(client):
+    client.put("/api/v1/settings", json={"model_api_key": "offline-cancel-key"})
+
+    class WaitingStream(httpx.AsyncByteStream):
+        async def __aiter__(self):
+            payload = {
+                "choices": [
+                    {"delta": {"content": "尚未完成"}, "finish_reason": None}
+                ]
+            }
+            yield ("data: " + json.dumps(payload) + "\n\n").encode()
+            while True:
+                await asyncio.sleep(1)
+
+    client.app.state.manager.model_transport = httpx.MockTransport(
+        lambda request: httpx.Response(200, stream=WaitingStream())
+    )
+    response = client.post(
+        "/api/v1/runs",
+        json={"task": "合成取消验收", "request_key": "cancel-progress"},
+    )
+    ident = response.json()["id"]
+    deadline = time.monotonic() + 5
+    while not any(
+        event["kind"] == "delta" for event in client.app.state.store.events(ident)
+    ):
+        assert time.monotonic() < deadline, "Model did not yield its draft"
+        time.sleep(0.01)
+    client.post("/api/v1/runs/" + ident + "/cancel")
+    run = wait_run(client, ident)
+    assert run["status"] == "cancelled" and run["result"] == ""
+    events = client.app.state.store.events(ident)
+    progress = [event for event in events if event["kind"] == "assistant.progress"]
+    assert [event["data"]["text"] for event in progress] == ["尚未完成"]
+    assert sum(event["kind"] == "finished" for event in events) == 1
+    history = client.get("/api/v1/conversations/" + run["conversation_id"]).json()
+    assert not any(message["role"] == "assistant" for message in history["messages"])
+
+
 def test_missing_model_key_is_actionable_not_fake_success(client):
     response = client.post(
         "/api/v1/runs", json={"task": "部署网站", "request_key": "no-key-request"}

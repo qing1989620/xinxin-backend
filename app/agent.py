@@ -735,6 +735,9 @@ class TaskManager:
                 self.tasks.pop(ident, None)
                 self.cancellations.pop(ident, None)
                 return
+            if text and status != "completed":
+                self.store.event(ident, "assistant.progress", {"text": text})
+                text = ""
             if text:
                 self.store.message(
                     self.store.one(
