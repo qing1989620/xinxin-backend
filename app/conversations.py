@@ -40,43 +40,65 @@ def directory_size(target):
     return total
 
 
+def selection(store, idents):
+    if not 1 <= len(idents) <= 100 or len(set(idents)) != len(idents):
+        raise ValueError("请选1至100段对话，不能重复")
+    for ident in idents:
+        workspace_path(store, ident)
+    placeholders = ",".join("?" for _ in idents)
+    if store.one(f"SELECT COUNT(*) n FROM conversations WHERE id IN ({placeholders})", idents)["n"] != len(idents):
+        raise ValueError("部分对话已不存在，请刷新列表后重试")
+    return placeholders
+
+
 def deletion_preview(store, ident):
-    _, workspace = workspace_path(store, ident)
+    return batch_deletion_preview(store, [ident])
+
+
+def batch_deletion_preview(store, idents):
+    placeholders = selection(store, idents)
     counts = {}
     for key, sql in {
-        "messages": "SELECT COUNT(*) n FROM messages WHERE conversation_id=?",
-        "runs": "SELECT COUNT(*) n FROM runs WHERE conversation_id=?",
-        "events": "SELECT COUNT(*) n FROM events WHERE run_id IN (SELECT id FROM runs WHERE conversation_id=?)",
+        "messages": f"SELECT COUNT(*) n FROM messages WHERE conversation_id IN ({placeholders})",
+        "runs": f"SELECT COUNT(*) n FROM runs WHERE conversation_id IN ({placeholders})",
+        "events": f"SELECT COUNT(*) n FROM events WHERE run_id IN (SELECT id FROM runs WHERE conversation_id IN ({placeholders}))",
     }.items():
-        counts[key] = store.one(sql, (ident,))["n"]
-    counts["workspace_bytes"] = directory_size(workspace)
+        counts[key] = store.one(sql, idents)["n"]
+    counts["conversations"] = len(idents)
+    counts["workspace_bytes"] = sum(directory_size(workspace_path(store, ident)[1]) for ident in idents)
     files = store.all(
-        "SELECT id,size FROM files WHERE run_id IN (SELECT id FROM runs WHERE conversation_id=?)", (ident,),
+        f"SELECT id,size FROM files WHERE run_id IN (SELECT id FROM runs WHERE conversation_id IN ({placeholders}))", idents,
     )
     counts["generated_files"] = len(files)
     counts["generated_bytes"] = sum(row["size"] for row in files)
     return counts
 
 
-def shared_file(db, ident, conversation):
+def shared_file(db, ident, conversations):
     pattern = "%" + ident + "%"
+    placeholders = ",".join("?" for _ in conversations)
     return any((
         db.execute("SELECT 1 FROM records WHERE payload LIKE ? LIMIT 1", (pattern,)).fetchone(),
-        db.execute("SELECT 1 FROM messages WHERE conversation_id<>? AND content LIKE ? LIMIT 1", (conversation, pattern)).fetchone(),
-        db.execute("SELECT 1 FROM run_context WHERE conversation_id<>? AND messages LIKE ? LIMIT 1", (conversation, pattern)).fetchone(),
-        db.execute("SELECT 1 FROM events e JOIN runs r ON r.id=e.run_id WHERE r.conversation_id<>? AND e.data LIKE ? LIMIT 1", (conversation, pattern)).fetchone(),
+        db.execute(f"SELECT 1 FROM messages WHERE conversation_id NOT IN ({placeholders}) AND content LIKE ? LIMIT 1", (*conversations, pattern)).fetchone(),
+        db.execute(f"SELECT 1 FROM run_context WHERE conversation_id NOT IN ({placeholders}) AND messages LIKE ? LIMIT 1", (*conversations, pattern)).fetchone(),
+        db.execute(f"SELECT 1 FROM events e JOIN runs r ON r.id=e.run_id WHERE r.conversation_id NOT IN ({placeholders}) AND e.data LIKE ? LIMIT 1", (*conversations, pattern)).fetchone(),
     ))
 
 
 def purge_conversation(store, library, ident):
-    root, workspace = workspace_path(store, ident)
-    preview = deletion_preview(store, ident)
+    return purge_conversations(store, library, [ident])
+
+
+def purge_conversations(store, library, idents):
+    placeholders = selection(store, idents)
+    preview = batch_deletion_preview(store, idents)
+    workspaces = [(ident, workspace_path(store, ident)[1]) for ident in idents]
     trash_root = private_directory(store, ".deletion-trash")
     files_root = private_directory(store, "files")
     if library.root.resolve() != files_root:
         raise ValueError("文件库路径异常，未删除")
     trash_root.mkdir(mode=0o700, exist_ok=True)
-    trash = trash_root / (ident + "-" + uid())
+    trash = trash_root / ("batch-" + uid())
     trash.mkdir(mode=0o700)
     moved = []
     removed_bytes = preview["workspace_bytes"]
@@ -87,15 +109,18 @@ def purge_conversation(store, library, ident):
             db.execute("BEGIN IMMEDIATE")
             if db.execute("SELECT 1 FROM runs WHERE status IN ('queued','running','cancelling') LIMIT 1").fetchone():
                 raise ValueError("请先停止运行任务，再永久删除对话")
-            if workspace.exists():
-                destination = trash / "workspace"
-                workspace.rename(destination)
-                moved.append((destination, workspace))
+            if db.execute(f"SELECT COUNT(*) FROM conversations WHERE id IN ({placeholders})", idents).fetchone()[0] != len(idents):
+                raise ValueError("部分对话已不存在，本批未删除")
+            for ident, workspace in workspaces:
+                if workspace.exists():
+                    destination = trash / ("workspace-" + ident)
+                    workspace.rename(destination)
+                    moved.append((destination, workspace))
             files = db.execute(
-                "SELECT id,size FROM files WHERE run_id IN (SELECT id FROM runs WHERE conversation_id=?)", (ident,),
+                f"SELECT id,size FROM files WHERE run_id IN (SELECT id FROM runs WHERE conversation_id IN ({placeholders}))", idents,
             ).fetchall()
             for file in files:
-                if shared_file(db, file["id"], ident):
+                if shared_file(db, file["id"], idents):
                     retained += 1
                     continue
                 raw_path = Path(db.execute("SELECT path FROM files WHERE id=?", (file["id"],)).fetchone()["path"])
@@ -111,11 +136,11 @@ def purge_conversation(store, library, ident):
                 db.execute("DELETE FROM uploads WHERE file_id=?", (file["id"],))
                 db.execute("DELETE FROM files WHERE id=?", (file["id"],))
             for table in ("events", "message_runs"):
-                db.execute(f"DELETE FROM {table} WHERE run_id IN (SELECT id FROM runs WHERE conversation_id=?)", (ident,))
+                db.execute(f"DELETE FROM {table} WHERE run_id IN (SELECT id FROM runs WHERE conversation_id IN ({placeholders}))", idents)
             for table in ("run_context", "run_plan", "messages", "runs"):
-                db.execute(f"DELETE FROM {table} WHERE conversation_id=?", (ident,))
-            db.execute("DELETE FROM conversations WHERE id=?", (ident,))
-            db.execute("DELETE FROM conversation_options WHERE conversation_id=?", (ident,))
+                db.execute(f"DELETE FROM {table} WHERE conversation_id IN ({placeholders})", idents)
+            db.execute(f"DELETE FROM conversations WHERE id IN ({placeholders})", idents)
+            db.execute(f"DELETE FROM conversation_options WHERE conversation_id IN ({placeholders})", idents)
         committed = True
     except BaseException:
         for source, destination in reversed(moved):
@@ -139,5 +164,5 @@ def purge_conversation(store, library, ident):
         compacted = True
     except sqlite3.Error:
         pass
-    store.audit("conversation.deleted", {"conversation_id": ident, "removed_file_bytes": removed_bytes})
-    return {"deleted": True, "removed_file_bytes": 0 if cleanup_pending else removed_bytes, "shared_generated_files_retained": retained, "database_compacted": compacted, "cleanup_pending": cleanup_pending}
+    store.audit("conversation.deleted", {"conversation_ids": idents, "removed_file_bytes": removed_bytes})
+    return {"deleted": True, "deleted_ids": idents, "removed_file_bytes": 0 if cleanup_pending else removed_bytes, "shared_generated_files_retained": retained, "database_compacted": compacted, "cleanup_pending": cleanup_pending}

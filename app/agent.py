@@ -20,6 +20,7 @@ from .model import ModelGateway, ModelBudgetExceeded
 from .recovery import previous_work
 from .context import context_manager_type, prior_messages, save_context
 from .persona import build_system_prompt
+from .progress import ProgressNarrator
 from .store import encode, now, uid
 from .creative import plot_csv, transform_image, gallery
 
@@ -40,7 +41,7 @@ for _handler in tuple(_tina_logger.handlers):
 TaskContext = context_manager_type(ContextManager)
 
 class PlatformExecutor(ToolsExecutor):
-    def __init__(self, sanitize=str, cancelled=None, on_cancel_result=None):
+    def __init__(self, sanitize=str, cancelled=None, on_cancel_result=None, on_start=None):
         super().__init__(max_workers=1)
         self.unresolved = {}
         self.inflight = set()
@@ -48,6 +49,7 @@ class PlatformExecutor(ToolsExecutor):
         self.cancelled = cancelled
         self.on_cancel_result = on_cancel_result
         self.remote_stop_unconfirmed = False
+        self.on_start = on_start
 
     def _raw_execute(self, tool, arguments):
         # Tina's global stdout redirection is unsuitable for concurrent HTTP jobs.
@@ -81,10 +83,14 @@ class PlatformExecutor(ToolsExecutor):
         )
 
     async def _async_dispatch(self, name, arguments, tool, timeout):
+        if self.cancelled and self.cancelled.is_set():
+            return encode({"ok": False, "error": "任务已取消，本步未启动"})
         if tool is None:
             self.unresolved[name] = "未知工具"
             return "未知工具：" + name
         try:
+            if self.on_start:
+                self.on_start(name, arguments)
             if inspect.iscoroutinefunction(tool):
                 result = await tool(**arguments)
             else:
@@ -264,6 +270,8 @@ class TaskManager:
         allow_memory=False,
         max_total_tokens=None,
         context_window_tokens=None,
+        resume_of=None,
+        message_text=None,
     ):
         if self.maintenance.is_set():
             raise ValueError("正在清理对话与整理存储，请稍后提交任务")
@@ -277,6 +285,8 @@ class TaskManager:
             if context_window_tokens not in CONTEXT_TIERS:
                 raise ValueError("上下文档位只能选择80K、300K或1000K")
             signature_input.append({"context_window_tokens": context_window_tokens})
+        if resume_of:
+            signature_input.append({"resume_of": resume_of})
         signature = hashlib.sha256(
             encode(signature_input).encode()
         ).hexdigest()
@@ -314,6 +324,13 @@ class TaskManager:
         )
         if active:
             raise ValueError("此对话已有运行中的任务，请等待或取消")
+        if resume_of:
+            parent = self.store.one("SELECT * FROM runs WHERE id=? AND conversation_id=?", (resume_of, cid))
+            latest = self.store.one("SELECT id FROM runs WHERE conversation_id=? ORDER BY created DESC,rowid DESC LIMIT 1", (cid,))
+            if not parent or parent["status"] not in {"failed", "cancelled", "interrupted", "completed"}:
+                raise ValueError("只能续接此对话中已经结束的任务")
+            if not latest or latest["id"] != resume_of:
+                raise ValueError("此任务之后已有新轮次，请继续最新一轮，避免重复执行")
         if context_window_tokens is not None:
             self.store.execute(
                 "INSERT INTO conversation_options VALUES(?,?) ON CONFLICT(conversation_id) "
@@ -323,7 +340,7 @@ class TaskManager:
         context_window_tokens = choice["context_window_tokens"] if choice else CONTEXT_WINDOW_TOKENS
         ident = uid()
         self.store.execute(
-            "INSERT INTO runs(id,conversation_id,task,status,permission,server_id,max_calls,max_seconds,created,updated,request_key,request_signature,allow_memory,max_total_tokens,context_window_tokens) VALUES(?,?,?,'queued',?,?,?,?,?,?,?,?,?,?,?)",
+            "INSERT INTO runs(id,conversation_id,task,status,permission,server_id,max_calls,max_seconds,created,updated,request_key,request_signature,allow_memory,max_total_tokens,context_window_tokens,resume_of) VALUES(?,?,?,'queued',?,?,?,?,?,?,?,?,?,?,?,?)",
             (
                 ident,
                 cid,
@@ -339,12 +356,15 @@ class TaskManager:
                 int(allow_memory),
                 max_total_tokens if max_total_tokens is not None else max_calls * TOKENS_PER_MODEL_CALL,
                 context_window_tokens,
+                resume_of,
             ),
         )
-        self.store.message(cid, "user", task, run_id=ident)
+        self.store.message(cid, "user", message_text if message_text is not None else task, run_id=ident)
         self.store.event(
             ident, "queued", {"permission": permission, "server_id": server_id}
         )
+        if resume_of:
+            self.store.event(ident, "context.continued", {"from_run_id": resume_of, "fresh_budget": True, "max_calls": max_calls, "max_seconds": max_seconds})
         flag = threading.Event()
         self.cancellations[ident] = flag
         self.tasks[ident] = asyncio.create_task(self._run(ident, flag, operation))
@@ -378,7 +398,7 @@ class TaskManager:
             )
         return self.store.one("SELECT * FROM runs WHERE id=?", (ident,))
 
-    def _tools(self, run, flag):
+    def _tools(self, run, flag, progress=None):
         policy = Policy(
             run["permission"],
             self.store.directory / "workspaces" / run["conversation_id"],
@@ -389,9 +409,10 @@ class TaskManager:
             on_cancel_result=lambda name, result: self.store.event(run["id"], "tool.cancelled", {
                 "name": name, "result": result,
             }),
+            on_start=progress.before if progress else None,
         ))
 
-        def command_progress(name):
+        def command_progress(name, purpose=""):
             command_id = uid()
 
             def emit(output, elapsed, byte_count):
@@ -401,8 +422,22 @@ class TaskManager:
                     "elapsed_seconds": elapsed, "output_bytes": byte_count,
                     "output": sanitized[-5000:], "truncated": len(sanitized) > 5000,
                 })
+                if progress:
+                    progress.command(command_id, name, purpose, sanitized, elapsed, byte_count)
 
             return emit
+
+        @tools.register()
+        def report_progress(summary: str, next_step: str = ""):
+            """Tell the owner what tool evidence confirms, what is happening, and what comes next. Brief public explanation, never hidden reasoning or invented success."""
+            if not summary.strip() or len(summary) > 600 or len(next_step) > 300:
+                raise ValueError("进度说明需简短，摘要最多600字，下一步最多300字")
+            text = summary.strip() + ("\n接下来：" + next_step.strip() if next_step.strip() else "")
+            if progress:
+                progress.note(text, source="agent")
+            else:
+                self.store.event(run["id"], "progress.note", {"text": self.redact(text), "source": "agent"})
+            return {"reported": True}
 
         @tools.register()
         def update_plan(steps: list[dict[str, str]]):
@@ -529,9 +564,9 @@ class TaskManager:
                 return self.library.save_stream(target.name, source, run_id=run["id"])
 
         @tools.register()
-        def execute_command(command: str, timeout: int = 300):
+        def execute_command(command: str, timeout: int = 300, purpose: str = ""):
             """Run on the backend host with live output; full permission. timeout is 1–1800 seconds. Do not detach with nohup or &: cancellation owns this command group."""
-            return run_command(policy, command, timeout, on_output=command_progress("execute_command"))
+            return run_command(policy, command, timeout, on_output=command_progress("execute_command", purpose))
 
         @tools.register()
         def list_servers():
@@ -542,7 +577,7 @@ class TaskManager:
             ]
 
         @tools.register()
-        def run_remote_command(command: str, timeout: int = 300):
+        def run_remote_command(command: str, timeout: int = 300, purpose: str = ""):
             """Execute on the selected Linux/Python3 SSH server with live output. Full permission; timeout 1–1800 seconds. Do not detach with nohup or &: cancellation owns the process group. Use an explicit service manager for lasting services."""
             policy.require("full")
             if not run["server_id"]:
@@ -568,7 +603,7 @@ class TaskManager:
                 key_path.chmod(0o600)
                 return remote_command(
                     policy, server, key_path, command, hosts, timeout,
-                    on_output=command_progress("run_remote_command"),
+                    on_output=command_progress("run_remote_command", purpose),
                 )
             finally:
                 key_path.unlink(missing_ok=True)
@@ -716,7 +751,7 @@ class TaskManager:
 
     async def _execute_run(self, ident, flag, operation):
         text, status, error = "", "failed", ""
-        tools, pending_operation, context = None, None, None
+        tools, pending_operation, context, progress = None, None, None, None
         try:
             run = self.store.one("SELECT * FROM runs WHERE id=?", (ident,))
             if flag.is_set():
@@ -753,7 +788,8 @@ class TaskManager:
                         transport=self.model_transport,
                         context_window_tokens=run["context_window_tokens"],
                     )
-                    tools, events = self._tools(run, flag), AgentEvents()
+                    progress = ProgressNarrator(lambda kind, data: self.store.event(ident, kind, data), self.redact)
+                    tools, events = self._tools(run, flag, progress), AgentEvents()
 
                     def before(name, arguments):
                         if flag.is_set():
@@ -769,6 +805,7 @@ class TaskManager:
                         return name, arguments
 
                     def after(name, arguments, result):
+                        progress.after(name, name not in tools.tools_executor.unresolved, result)
                         self.store.event(
                             ident,
                             "tool.completed",
@@ -898,6 +935,8 @@ class TaskManager:
                     )
                 if context is not None:
                     save_context(self.store, run, context.messages, self.redact)
+                if progress:
+                    progress.finish_waits()
                 self.store.execute(
                     "UPDATE runs SET status=?,result=?,error=?,updated=? WHERE id=?",
                     (status, text, error, now(), ident),

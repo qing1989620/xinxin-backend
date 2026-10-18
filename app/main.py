@@ -31,7 +31,7 @@ from .config import (
     TOKENS_PER_MODEL_CALL, CONTEXT_WINDOW_TOKENS, CONTEXT_INPUT_TOKENS,
 )
 from .creative import gallery, plot_csv, transform_image
-from .conversations import deletion_preview, purge_conversation
+from .conversations import deletion_preview, purge_conversation, batch_deletion_preview, purge_conversations
 from .files import FileLibrary, FileTooLarge, UploadConflict
 from .model import endpoint
 from .mail import MailCodes
@@ -92,9 +92,7 @@ class EmailSettings(EmailAddress):
     smtp_password: str = Field(default="", max_length=500, pattern=r"^[\x21-\x7e]*$")
 
 
-class RunInput(Input):
-    task: str = Field(min_length=1, max_length=12000)
-    conversation_id: str | None = None
+class ExecutionInput(Input):
     permission: Literal["read", "workspace", "full"] = "read"
     server_id: str | None = None
     max_calls: int = Field(default=DEFAULT_MODEL_CALLS, ge=1, le=128)
@@ -104,6 +102,19 @@ class RunInput(Input):
     request_key: str = Field(min_length=8, max_length=100)
     file_ids: list[str] = Field(default_factory=list, max_length=10)
     allow_memory: bool = False
+
+
+class RunInput(ExecutionInput):
+    task: str = Field(min_length=1, max_length=12000)
+    conversation_id: str | None = None
+
+
+class ContinueInput(ExecutionInput):
+    instruction: str = Field(default="", max_length=4000)
+
+
+class ConversationSelection(Input):
+    ids: list[str] = Field(min_length=1, max_length=100)
 
 
 class ConversationContext(Input):
@@ -483,12 +494,23 @@ def create_app(config=None):
     @app.delete("/api/v1/conversations/{ident}/permanent", dependencies=[Depends(owner)])
     async def erase_conversation(ident: str):
         require_row("conversations", ident)
+        return await erase_selected([ident])
+
+    @app.post("/api/v1/conversations/batch/deletion-preview", dependencies=[Depends(owner)])
+    async def preview_batch_conversation_deletion(body: ConversationSelection):
+        return await asyncio.to_thread(batch_deletion_preview, store, body.ids)
+
+    @app.post("/api/v1/conversations/batch/permanent", dependencies=[Depends(owner)])
+    async def erase_batch_conversations(body: ConversationSelection):
+        return await erase_selected(body.ids)
+
+    async def erase_selected(ids):
         if manager.maintenance.is_set() or store.one(
             "SELECT id FROM runs WHERE status IN ('queued','running','cancelling') LIMIT 1"
         ):
             raise HTTPException(409, "请先停止运行任务，再永久删除对话")
         manager.maintenance.set()
-        pending = asyncio.create_task(asyncio.to_thread(purge_conversation, store, library, ident))
+        pending = asyncio.create_task(asyncio.to_thread(purge_conversations, store, library, ids))
         try:
             return await asyncio.shield(pending)
         finally:
@@ -575,6 +597,38 @@ def create_app(config=None):
                 for row in store.all("SELECT id FROM files WHERE run_id=?", (ident,))
             ],
         }
+
+    @app.post("/api/v1/runs/{ident}/continue", dependencies=[Depends(owner)])
+    async def continue_run(ident: str, body: ContinueInput):
+        parent = require_row("runs", ident)
+        original, visited = parent, {ident}
+        while original.get("resume_of"):
+            previous = original["resume_of"]
+            if previous in visited or len(visited) >= 128:
+                raise HTTPException(400, "任务续接链异常，请从当前对话核对后重试")
+            visited.add(previous)
+            original = store.one("SELECT * FROM runs WHERE id=? AND conversation_id=?", (previous, parent["conversation_id"]))
+            if not original:
+                raise HTTPException(400, "原任务记录缺失，无法安全续接")
+        task = (
+            "继续完成以下原任务目标（原文中的旧预算和旧权限不适用于本轮）：\n"
+            + original["task"]
+            + "\n\n本轮续接要求：先根据检查点、工具记录、计划和实际文件/服务状态确认前轮已完成的部分，"
+            "从未完成处继续；不盲目重放命令、不重复创建或覆盖。使用本轮新的预算、所选权限、服务器和记忆授权。"
+        )
+        if body.instruction:
+            task += "\n主人本轮补充：\n" + body.instruction
+        if body.file_ids:
+            task += "\n本轮新增附件（使用文件工具读取）：" + encode([
+                {"id": item["id"], "name": item["name"]} for item in (library.get(file) for file in body.file_ids)
+            ])
+        return await manager.submit(
+            task, parent["conversation_id"], body.permission, body.server_id,
+            body.max_calls, body.max_seconds, body.request_key,
+            allow_memory=body.allow_memory, max_total_tokens=body.max_total_tokens,
+            context_window_tokens=body.context_window_tokens, resume_of=ident,
+            message_text="继续原任务。" + ("\n补充：" + body.instruction if body.instruction else ""),
+        )
 
     @app.get("/api/v1/runs/{ident}/activity", dependencies=[Depends(owner)])
     def activity(ident: str):
@@ -955,6 +1009,9 @@ def create_app(config=None):
                 "managed_ssh_cancellation": True,
                 "conversation_delete": True,
                 "context_tiers": True,
+                "public_progress": True,
+                "run_continuation": True,
+                "conversation_batch_delete": True,
             },
         }
 

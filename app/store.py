@@ -85,6 +85,10 @@ class Store:
                 row["name"] for row in db.execute("PRAGMA table_info(runs)")
             }:
                 db.execute("ALTER TABLE runs ADD COLUMN context_window_tokens INTEGER")
+            if "resume_of" not in {
+                row["name"] for row in db.execute("PRAGMA table_info(runs)")
+            }:
+                db.execute("ALTER TABLE runs ADD COLUMN resume_of TEXT")
             if "archived" not in {
                 row["name"] for row in db.execute("PRAGMA table_info(conversations)")
             }:

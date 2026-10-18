@@ -47,10 +47,10 @@ def test_context_tier_is_persistent_frozen_per_run_and_part_of_retry_identity(cl
 def test_local_cancel_error_does_not_claim_an_unconfirmed_remote_stop():
     async def scenario():
         flag = threading.Event()
-        flag.set()
         executor = PlatformExecutor(cancelled=flag)
 
         def local_failure():
+            flag.set()
             raise ValueError("local cancelled operation")
 
         await executor._async_dispatch("read_file", {}, local_failure, 60)

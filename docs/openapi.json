@@ -939,6 +939,114 @@
         }
       }
     },
+    "/api/v1/conversations/batch/deletion-preview": {
+      "post": {
+        "summary": "Preview Batch Conversation Deletion",
+        "operationId": "preview_batch_conversation_deletion_api_v1_conversations_batch_deletion_preview_post",
+        "parameters": [
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ConversationSelection"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/conversations/batch/permanent": {
+      "post": {
+        "summary": "Erase Batch Conversations",
+        "operationId": "erase_batch_conversations_api_v1_conversations_batch_permanent_post",
+        "parameters": [
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ConversationSelection"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/conversations/{ident}/restore": {
       "post": {
         "summary": "Restore Conversation",
@@ -1131,6 +1239,69 @@
             }
           }
         ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/runs/{ident}/continue": {
+      "post": {
+        "summary": "Continue Run",
+        "operationId": "continue_run_api_v1_runs__ident__continue_post",
+        "parameters": [
+          {
+            "name": "ident",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Ident"
+            }
+          },
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ContinueInput"
+              }
+            }
+          }
+        },
         "responses": {
           "200": {
             "description": "Successful Response",
@@ -3315,6 +3486,105 @@
         ],
         "title": "Body_upload_api_v1_files_post"
       },
+      "ContinueInput": {
+        "properties": {
+          "permission": {
+            "type": "string",
+            "enum": [
+              "read",
+              "workspace",
+              "full"
+            ],
+            "title": "Permission",
+            "default": "read"
+          },
+          "server_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Server Id"
+          },
+          "max_calls": {
+            "type": "integer",
+            "maximum": 128.0,
+            "minimum": 1.0,
+            "title": "Max Calls",
+            "default": 64
+          },
+          "max_seconds": {
+            "type": "integer",
+            "maximum": 7200.0,
+            "minimum": 10.0,
+            "title": "Max Seconds",
+            "default": 3600
+          },
+          "max_total_tokens": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "maximum": 100000000.0,
+                "minimum": 5000.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Max Total Tokens"
+          },
+          "context_window_tokens": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "enum": [
+                  80000,
+                  300000,
+                  1048576
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Context Window Tokens"
+          },
+          "request_key": {
+            "type": "string",
+            "maxLength": 100,
+            "minLength": 8,
+            "title": "Request Key"
+          },
+          "file_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "maxItems": 10,
+            "title": "File Ids"
+          },
+          "allow_memory": {
+            "type": "boolean",
+            "title": "Allow Memory",
+            "default": false
+          },
+          "instruction": {
+            "type": "string",
+            "maxLength": 4000,
+            "title": "Instruction",
+            "default": ""
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "request_key"
+        ],
+        "title": "ContinueInput"
+      },
       "Conversation": {
         "properties": {
           "title": {
@@ -3347,6 +3617,25 @@
           "context_window_tokens"
         ],
         "title": "ConversationContext"
+      },
+      "ConversationSelection": {
+        "properties": {
+          "ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "maxItems": 100,
+            "minItems": 1,
+            "title": "Ids"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "ids"
+        ],
+        "title": "ConversationSelection"
       },
       "EmailLogin": {
         "properties": {
@@ -3675,23 +3964,6 @@
       },
       "RunInput": {
         "properties": {
-          "task": {
-            "type": "string",
-            "maxLength": 12000,
-            "minLength": 1,
-            "title": "Task"
-          },
-          "conversation_id": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Conversation Id"
-          },
           "permission": {
             "type": "string",
             "enum": [
@@ -3774,13 +4046,30 @@
             "type": "boolean",
             "title": "Allow Memory",
             "default": false
+          },
+          "task": {
+            "type": "string",
+            "maxLength": 12000,
+            "minLength": 1,
+            "title": "Task"
+          },
+          "conversation_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Conversation Id"
           }
         },
         "additionalProperties": false,
         "type": "object",
         "required": [
-          "task",
-          "request_key"
+          "request_key",
+          "task"
         ],
         "title": "RunInput"
       },

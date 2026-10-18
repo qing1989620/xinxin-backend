@@ -16,7 +16,7 @@ class ModelBudgetExceeded(RuntimeError):
         label = "模型调用次数" if kind == "calls" else "累计令牌"
         super().__init__(
             f"本轮{label}达到预算（{used}/{limit}），尚未形成最终答复；"
-            "可调整执行预算后继续，已执行的工具记录会保留。"
+            "可点“继续原任务”使用新一轮预算续接，已执行的工具记录会保留。"
         )
 
 
