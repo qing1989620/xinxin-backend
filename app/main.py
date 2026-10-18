@@ -619,16 +619,18 @@ def create_app(config=None):
         )
         if body.instruction:
             task += "\n主人本轮补充：\n" + body.instruction
+        attachment_note = ""
         if body.file_ids:
-            task += "\n本轮新增附件（使用文件工具读取）：" + encode([
+            attachment_note = "\n本轮新增附件（使用文件工具读取）：" + encode([
                 {"id": item["id"], "name": item["name"]} for item in (library.get(file) for file in body.file_ids)
             ])
+            task += attachment_note
         return await manager.submit(
             task, parent["conversation_id"], body.permission, body.server_id,
             body.max_calls, body.max_seconds, body.request_key,
             allow_memory=body.allow_memory, max_total_tokens=body.max_total_tokens,
             context_window_tokens=body.context_window_tokens, resume_of=ident,
-            message_text="继续原任务。" + ("\n补充：" + body.instruction if body.instruction else ""),
+            message_text="继续原任务。" + ("\n补充：" + body.instruction if body.instruction else "") + attachment_note,
         )
 
     @app.get("/api/v1/runs/{ident}/activity", dependencies=[Depends(owner)])

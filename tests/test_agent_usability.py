@@ -108,6 +108,18 @@ def test_parallel_commands_settle_only_their_own_waiting_state(client):
     assert events[-1]["command_id"] == "two" and events[-1]["finished"]
 
 
+def test_a_command_start_during_another_commands_finish_does_not_change_iteration(client):
+    events = []
+    def emit(kind, data):
+        events.append({"kind": kind, **data})
+        if data.get("finished") and data["command_id"] == "one":
+            narrator.command("two", "execute_command", "second", "", 20, 0)
+    narrator = ProgressNarrator(emit, client.app.state.manager.redact)
+    narrator.command("one", "execute_command", "first", "", 20, 0)
+    narrator.finish_waits("one")
+    assert narrator.waits["one"]["done"] and not narrator.waits["two"].get("done")
+
+
 def test_batch_delete_is_atomic_and_excludes_only_selected_references(client):
     store, library = client.app.state.store, client.app.state.library
     ids = [client.post("/api/v1/conversations", json={"title": "batch fixture"}).json()["id"] for _ in range(3)]
@@ -129,6 +141,21 @@ def test_batch_delete_is_atomic_and_excludes_only_selected_references(client):
     assert not store.one("SELECT id FROM files WHERE id=?", (inside["id"],))
     assert library.path(outside["id"]).is_file() and library.path(upload["id"]).is_file()
     assert client.get(f"/api/v1/conversations/{ids[2]}").status_code == 200
+
+
+def test_batch_delete_keeps_files_referenced_only_by_a_retained_cancelled_continuation(client):
+    store, library = client.app.state.store, client.app.state.library
+    ids = [client.post("/api/v1/conversations", json={"title": "retained queued attachment fixture"}).json()["id"] for _ in range(2)]
+    source = fixture_run(client, ids[0])
+    attachment = library.save("generated-input.txt", b"keep this attachment", run_id=source)
+    continued = fixture_run(client, ids[1], status="cancelled")
+    store.execute("UPDATE runs SET task=? WHERE id=?", ("continue; additional attachment " + attachment["id"], continued))
+    store.message(ids[1], "user", "继续原任务。", run_id=continued)
+    # Cancellation before dispatch has no tool events or context checkpoint.
+    response = client.post("/api/v1/conversations/batch/permanent", json={"ids": [ids[0]]})
+    assert response.status_code == 200
+    assert response.json()["shared_generated_files_retained"] == 1
+    assert library.path(attachment["id"]).read_bytes() == b"keep this attachment"
 
 
 def test_batch_failure_restores_every_workspace_file_and_row(client, tmp_path):

@@ -48,8 +48,10 @@ class ProgressNarrator:
         self.note(text, source="platform", tool=name, ok=bool(ok))
 
     def finish_waits(self, command_id=None):
-        for ident, state in self.waits.items():
-            if state.get("done") or not state["notice_at"] or command_id and ident != command_id:
+        # Each tool owns its id; another command may start while emit writes SQLite.
+        targets = [(command_id, self.waits.get(command_id))] if command_id else list(self.waits.items())
+        for ident, state in targets:
+            if not state or state.get("done") or not state["notice_at"]:
                 continue
             self.emit("progress.wait", {"command_id": ident, "text": "本步等待已结束，实际结果以工具或停止确认记录为准。", "finished": True})
             state["done"] = True

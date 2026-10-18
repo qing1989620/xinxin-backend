@@ -80,6 +80,7 @@ def shared_file(db, ident, conversations):
     return any((
         db.execute("SELECT 1 FROM records WHERE payload LIKE ? LIMIT 1", (pattern,)).fetchone(),
         db.execute(f"SELECT 1 FROM messages WHERE conversation_id NOT IN ({placeholders}) AND content LIKE ? LIMIT 1", (*conversations, pattern)).fetchone(),
+        db.execute(f"SELECT 1 FROM runs WHERE conversation_id NOT IN ({placeholders}) AND task LIKE ? LIMIT 1", (*conversations, pattern)).fetchone(),
         db.execute(f"SELECT 1 FROM run_context WHERE conversation_id NOT IN ({placeholders}) AND messages LIKE ? LIMIT 1", (*conversations, pattern)).fetchone(),
         db.execute(f"SELECT 1 FROM events e JOIN runs r ON r.id=e.run_id WHERE r.conversation_id NOT IN ({placeholders}) AND e.data LIKE ? LIMIT 1", (*conversations, pattern)).fetchone(),
     ))
