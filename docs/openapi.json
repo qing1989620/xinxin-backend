@@ -770,6 +770,112 @@
         }
       }
     },
+    "/api/v1/conversations/{ident}/deletion-preview": {
+      "get": {
+        "summary": "Preview Conversation Deletion",
+        "operationId": "preview_conversation_deletion_api_v1_conversations__ident__deletion_preview_get",
+        "parameters": [
+          {
+            "name": "ident",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Ident"
+            }
+          },
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/conversations/{ident}/permanent": {
+      "delete": {
+        "summary": "Erase Conversation",
+        "operationId": "erase_conversation_api_v1_conversations__ident__permanent_delete",
+        "parameters": [
+          {
+            "name": "ident",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Ident"
+            }
+          },
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/conversations/{ident}/restore": {
       "post": {
         "summary": "Restore Conversation",
@@ -935,6 +1041,59 @@
       "get": {
         "summary": "Run Detail",
         "operationId": "run_detail_api_v1_runs__ident__get",
+        "parameters": [
+          {
+            "name": "ident",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Ident"
+            }
+          },
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/runs/{ident}/activity": {
+      "get": {
+        "summary": "Activity",
+        "operationId": "activity_api_v1_runs__ident__activity_get",
         "parameters": [
           {
             "name": "ident",
@@ -3474,23 +3633,23 @@
           },
           "max_calls": {
             "type": "integer",
-            "maximum": 20.0,
+            "maximum": 128.0,
             "minimum": 1.0,
             "title": "Max Calls",
-            "default": 16
+            "default": 64
           },
           "max_seconds": {
             "type": "integer",
-            "maximum": 1800.0,
+            "maximum": 7200.0,
             "minimum": 10.0,
             "title": "Max Seconds",
-            "default": 900
+            "default": 3600
           },
           "max_total_tokens": {
             "anyOf": [
               {
                 "type": "integer",
-                "maximum": 1000000.0,
+                "maximum": 100000000.0,
                 "minimum": 5000.0
               },
               {

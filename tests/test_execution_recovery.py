@@ -22,7 +22,8 @@ def metered_frames(*, total=9500, **kwargs):
 
 def test_settings_advertises_execution_capabilities_without_secrets(client):
     data = client.get("/api/v1/settings").json()
-    assert data["capabilities"] == {"run_token_budget": True, "run_recovery": True}
+    assert data["capabilities"]["run_token_budget"] and data["capabilities"]["run_recovery"]
+    assert data["context_window_tokens"] == 1048576
     assert "model_api_key" not in data
 
 
@@ -54,7 +55,7 @@ def test_multistep_tools_can_finish_after_the_old_hidden_token_limit(client):
     }
     run = wait_run(client, client.post("/api/v1/runs", json=body).json()["id"])
     assert run["status"] == "completed", run
-    assert run["max_total_tokens"] == 160000
+    assert run["max_total_tokens"] == 1000000
     usage = json.loads(run["usage"])
     assert usage["calls"] == 7 and usage["total_tokens"] == 66500
     assert run["result"] == "多步执行和文件核验完成。"
@@ -274,7 +275,7 @@ def test_long_recovery_keeps_the_current_task_and_valid_system_json(client):
 
 
 def test_context_discards_parallel_tool_exchanges_as_whole_groups():
-    context = TaskContext("protected-current-goal")
+    context = TaskContext("protected-current-goal", max_length=7000)
     context.set_system_message("system-" * 2000)
     context.add_user_message("protected-current-goal")
     for batch in range(5):
@@ -296,7 +297,7 @@ def test_context_discards_parallel_tool_exchanges_as_whole_groups():
 
 
 def test_an_unfittable_latest_tool_group_fails_instead_of_dropping_the_task():
-    context = TaskContext("protected-goal", max_length=500)
+    context = TaskContext("protected-goal", max_length=200)
     context.set_system_message("system")
     context.add_user_message("protected-goal")
     context.add_tool_calls([{

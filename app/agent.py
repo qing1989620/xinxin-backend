@@ -3,6 +3,7 @@ import hashlib
 import inspect
 import shutil
 import json
+import logging
 import os
 import re
 import shlex
@@ -12,11 +13,12 @@ from pathlib import Path
 
 from .config import (
     ROOT, DEFAULT_MODEL_CALLS, DEFAULT_TASK_SECONDS, TOKENS_PER_MODEL_CALL,
-    MAX_CONTEXT_CHARS,
+    CONTEXT_INPUT_TOKENS, CONTEXT_WINDOW_TOKENS,
 )
 from .execution import Policy, run_command, remote_command
 from .model import ModelGateway, ModelBudgetExceeded
 from .recovery import previous_work
+from .context import context_manager_type, prior_messages, save_context
 from .persona import build_system_prompt
 from .store import encode, now, uid
 from .creative import plot_csv, transform_image, gallery
@@ -26,44 +28,26 @@ from tina import Agent, Tools, AgentEvents
 from tina.agent.core.executor import ToolsExecutor
 from tina.agent.core.context_manager import ContextManager
 
+# Tina's debug file logger writes raw arguments/results before platform redaction.
+# The platform's persisted, sanitized events are the execution log.
+_tina_logger = logging.getLogger("tina")
+_tina_logger.disabled = True
+for _handler in tuple(_tina_logger.handlers):
+    _handler.close()
+    _tina_logger.removeHandler(_handler)
 
-class TaskContext(ContextManager):
-    """Keep this turn's instruction and whole tool exchanges when trimming."""
 
-    def __init__(self, instruction, max_length=MAX_CONTEXT_CHARS):
-        super().__init__(max_length=max_length, max_tool_result_length=16000)
-        self.instruction = instruction
-
-    def limit_messages(self):
-        current = next((
-            item for item in reversed(self.messages)
-            if item.get("role") == "user" and item.get("content") == self.instruction
-        ), None)
-        groups = []
-        for message in self.messages:
-            if message.get("role") == "tool" and groups and groups[-1][0].get("tool_calls"):
-                groups[-1].append(message)
-            else:
-                groups.append([message])
-        while sum(len(encode(group)) for group in groups) > self.max_length:
-            removable = next((
-                index for index, group in enumerate(groups[:-1])
-                if not any(item.get("role") == "system" or item is current for item in group)
-            ), None)
-            if removable is None:
-                raise RuntimeError(
-                    "本轮上下文超过可用空间；当前指令已保留，请分批读取工具输出后继续。"
-                )
-            groups.pop(removable)
-        self.messages[:] = [message for group in groups for message in group]
-
+TaskContext = context_manager_type(ContextManager)
 
 class PlatformExecutor(ToolsExecutor):
-    def __init__(self, sanitize=str):
+    def __init__(self, sanitize=str, cancelled=None, on_cancel_result=None):
         super().__init__(max_workers=1)
         self.unresolved = {}
         self.inflight = set()
         self.sanitize = sanitize
+        self.cancelled = cancelled
+        self.on_cancel_result = on_cancel_result
+        self.remote_stop_unconfirmed = False
 
     def _raw_execute(self, tool, arguments):
         # Tina's global stdout redirection is unsuitable for concurrent HTTP jobs.
@@ -110,6 +94,21 @@ class PlatformExecutor(ToolsExecutor):
                 )
                 self.inflight.add(pending)
                 pending.add_done_callback(self.inflight.discard)
+
+                def record_cancel_result(future):
+                    if not self.cancelled or not self.cancelled.is_set():
+                        return
+                    try:
+                        value = future.result()
+                        parsed = json.loads(value) if isinstance(value, str) else value
+                        if isinstance(parsed, dict) and parsed.get("remote_stop_confirmed") is False:
+                            self.remote_stop_unconfirmed = True
+                        if self.on_cancel_result:
+                            self.on_cancel_result(name, self.sanitize(value))
+                    except (Exception, asyncio.CancelledError):
+                        self.remote_stop_unconfirmed = True
+
+                pending.add_done_callback(record_cancel_result)
                 result = await asyncio.shield(pending)
             structured = result
             if isinstance(result, str):
@@ -135,8 +134,8 @@ class PlatformExecutor(ToolsExecutor):
             await asyncio.gather(*list(self.inflight), return_exceptions=True)
 
 
-def safe_summary(value):
-    text = str(value)[:12000]
+def safe_summary(value, limit=12000):
+    text = str(value) if limit is None else str(value)[:limit]
     text = re.sub(
         r"(?i)(api[_-]?key|password|secret|authorization|token)([\s:=]+)[^\s,;]+",
         r"\1\2[redacted]",
@@ -152,6 +151,7 @@ class TaskManager:
         self.library, self.router = library, router
         self.tasks, self.cancellations = {}, {}
         self.semaphore = asyncio.Semaphore(config.task_concurrency)
+        self.maintenance = threading.Event()
         self.model_transport = None
 
     def model_config(self):
@@ -161,7 +161,7 @@ class TaskManager:
             self.auth.secret("model_api_key", self.config.api_key),
         )
 
-    def redact(self, value):
+    def redact(self, value, limit=16000):
         text = str(value)
         keys = [self.config.api_key]
         vault_key = self.store.directory / "vault.key"
@@ -189,7 +189,11 @@ class TaskManager:
                 text,
                 flags=re.S,
             )
-            return safe_summary(text)
+            text = re.sub(
+                r"-----BEGIN [A-Z ]*PRIVATE KEY-----.*?(?:-----END [A-Z ]*PRIVATE KEY-----|$)",
+                "[redacted private key]", text, flags=re.S,
+            )
+            return safe_summary(text, limit=limit)
 
         def redact_data(data):
             if isinstance(data, str):
@@ -232,7 +236,7 @@ class TaskManager:
             result = encode(redact_data(structured))
             return (
                 result
-                if len(result) <= 16000
+                if limit is None or len(result) <= limit
                 else encode({"truncated": True, "preview": result[:6000]})
             )
         return redact_text(text)
@@ -259,6 +263,8 @@ class TaskManager:
         allow_memory=False,
         max_total_tokens=None,
     ):
+        if self.maintenance.is_set():
+            raise ValueError("正在清理对话与整理存储，请稍后提交任务")
         signature_input = [
             task, conversation_id, permission, server_id, max_calls, max_seconds,
             operation_input, bool(allow_memory),
@@ -321,7 +327,7 @@ class TaskManager:
                 max_total_tokens if max_total_tokens is not None else max_calls * TOKENS_PER_MODEL_CALL,
             ),
         )
-        self.store.message(cid, "user", task)
+        self.store.message(cid, "user", task, run_id=ident)
         self.store.event(
             ident, "queued", {"permission": permission, "server_id": server_id}
         )
@@ -340,7 +346,7 @@ class TaskManager:
         run = self.store.one("SELECT * FROM runs WHERE id=?", (ident,))
         if not run:
             raise ValueError("任务不存在")
-        if run["status"] not in {"queued", "running", "cancelling"}:
+        if run["status"] not in {"queued", "running"}:
             return run
         if ident in self.cancellations:
             self.cancellations[ident].set()
@@ -364,7 +370,49 @@ class TaskManager:
             self.store.directory / "workspaces" / run["conversation_id"],
             flag,
         )
-        tools = Tools(tools_executor=PlatformExecutor(self.redact))
+        tools = Tools(tools_executor=PlatformExecutor(
+            self.redact, cancelled=flag,
+            on_cancel_result=lambda name, result: self.store.event(run["id"], "tool.cancelled", {
+                "name": name, "result": result,
+            }),
+        ))
+
+        def command_progress(name):
+            command_id = uid()
+
+            def emit(output, elapsed, byte_count):
+                sanitized = self.redact(output, limit=None)
+                self.store.event(run["id"], "command.progress", {
+                    "command_id": command_id, "name": name,
+                    "elapsed_seconds": elapsed, "output_bytes": byte_count,
+                    "output": sanitized[-5000:], "truncated": len(sanitized) > 5000,
+                })
+
+            return emit
+
+        @tools.register()
+        def update_plan(steps: list[dict[str, str]]):
+            """Publish a concise task plan, then update statuses as actual work progresses. Each step has id, title, status (pending/in_progress/completed/blocked/cancelled). Plans do not grant permissions or prove completion."""
+            policy.require("read")
+            if not 1 <= len(steps) <= 24:
+                raise ValueError("计划需要1至24个步骤")
+            ids = set()
+            for step in steps:
+                if set(step) != {"id", "title", "status"} or not re.fullmatch(r"[A-Za-z0-9_-]{1,32}", step["id"]):
+                    raise ValueError("计划步骤字段无效")
+                if step["id"] in ids or not 1 <= len(step["title"]) <= 180:
+                    raise ValueError("计划步骤重复或标题过长")
+                if step["status"] not in {"pending", "in_progress", "completed", "blocked", "cancelled"}:
+                    raise ValueError("计划状态无效")
+                ids.add(step["id"])
+            cleaned = json.loads(self.redact(encode(steps), limit=None))
+            self.store.execute(
+                "INSERT INTO run_plan VALUES(?,?,?,?) ON CONFLICT(run_id) DO UPDATE SET "
+                "steps=excluded.steps,updated=excluded.updated",
+                (run["id"], run["conversation_id"], encode(cleaned), now()),
+            )
+            self.store.event(run["id"], "plan.updated", {"steps": cleaned})
+            return {"steps": cleaned}
 
         @tools.register()
         def search_skills(query: str):
@@ -375,6 +423,29 @@ class TaskManager:
         def load_skill(name: str, offset: int = 0):
             """Load a skill instruction page after discovery; follow next_offset until null."""
             return self.router.load(name, offset)
+
+        @tools.register()
+        def read_task_history(run_id: str = "", after: int = 0):
+            """Read a page of persisted task/tool facts in this conversation only; use next_after to continue. Empty run_id lists recent runs."""
+            policy.require("read")
+            if not run_id:
+                return self.store.all(
+                    "SELECT id,task,status,error FROM runs WHERE conversation_id=? "
+                    "AND id<>? ORDER BY created DESC LIMIT 30", (run["conversation_id"], run["id"]),
+                )
+            if not self.store.one(
+                "SELECT id FROM runs WHERE id=? AND conversation_id=?", (run_id, run["conversation_id"]),
+            ):
+                raise ValueError("任务不属于当前对话")
+            rows = self.store.all(
+                "SELECT seq,kind,data FROM events WHERE run_id=? AND seq>? "
+                "AND kind NOT IN ('delta','usage','skills','command.progress') ORDER BY seq LIMIT 8",
+                (run_id, max(0, int(after))),
+            )
+            return {
+                "events": [{**row, "data": json.loads(row["data"])} for row in rows],
+                "next_after": rows[-1]["seq"] if rows else None,
+            }
 
         @tools.register()
         def read_skill_resource(name: str, path: str, offset: int = 0):
@@ -444,9 +515,9 @@ class TaskManager:
                 return self.library.save_stream(target.name, source, run_id=run["id"])
 
         @tools.register()
-        def execute_command(command: str):
-            """Run a shell command on this backend host. Requires full task permission."""
-            return run_command(policy, command)
+        def execute_command(command: str, timeout: int = 300):
+            """Run on the backend host with live output; full permission. timeout is 1–1800 seconds. Do not detach with nohup or &: cancellation owns this command group."""
+            return run_command(policy, command, timeout, on_output=command_progress("execute_command"))
 
         @tools.register()
         def list_servers():
@@ -457,8 +528,8 @@ class TaskManager:
             ]
 
         @tools.register()
-        def run_remote_command(command: str):
-            """Execute on this task's selected SSH server. Requires full permission."""
+        def run_remote_command(command: str, timeout: int = 300):
+            """Execute on the selected Linux/Python3 SSH server with live output. Full permission; timeout 1–1800 seconds. Do not detach with nohup or &: cancellation owns the process group. Use an explicit service manager for lasting services."""
             policy.require("full")
             if not run["server_id"]:
                 raise ValueError("当前任务未选择目标服务器")
@@ -481,7 +552,10 @@ class TaskManager:
             hosts.write_text(server["host_key"] + "\n", encoding="utf-8")
             try:
                 key_path.chmod(0o600)
-                return remote_command(policy, server, key_path, command, hosts)
+                return remote_command(
+                    policy, server, key_path, command, hosts, timeout,
+                    on_output=command_progress("run_remote_command"),
+                )
             finally:
                 key_path.unlink(missing_ok=True)
                 hosts.unlink(missing_ok=True)
@@ -623,139 +697,146 @@ class TaskManager:
         return tools
 
     async def _run(self, ident, flag, operation):
+        async with self.semaphore:
+            await self._execute_run(ident, flag, operation)
+
+    async def _execute_run(self, ident, flag, operation):
         text, status, error = "", "failed", ""
-        tools, pending_operation = None, None
+        tools, pending_operation, context = None, None, None
         try:
-            async with self.semaphore:
-                run = self.store.one("SELECT * FROM runs WHERE id=?", (ident,))
-                if flag.is_set():
-                    raise asyncio.CancelledError()
-                self.store.execute(
-                    "UPDATE runs SET status='running',updated=? WHERE id=?",
-                    (now(), ident),
-                )
-                self.store.event(ident, "started", {})
-                async with asyncio.timeout(run["max_seconds"]):
-                    if operation:
-                        pending_operation = asyncio.create_task(operation(ident, flag))
-                        output = await asyncio.shield(pending_operation)
-                        text = encode(output)
-                        self.store.event(ident, "artifacts", output)
-                    else:
-                        url, model, key = self.model_config()
+            run = self.store.one("SELECT * FROM runs WHERE id=?", (ident,))
+            if flag.is_set():
+                raise asyncio.CancelledError()
+            self.store.execute(
+                "UPDATE runs SET status='running',updated=? WHERE id=?",
+                (now(), ident),
+            )
+            self.store.event(ident, "started", {})
+            async with asyncio.timeout(run["max_seconds"]):
+                if operation:
+                    pending_operation = asyncio.create_task(operation(ident, flag))
+                    output = await asyncio.shield(pending_operation)
+                    text = encode(output)
+                    self.store.event(ident, "artifacts", output)
+                else:
+                    url, model, key = self.model_config()
 
-                        def usage(value):
-                            self.store.execute(
-                                "UPDATE runs SET usage=? WHERE id=?",
-                                (encode(value), ident),
-                            )
-                            self.store.event(ident, "usage", value)
+                    def usage(value):
+                        self.store.execute(
+                            "UPDATE runs SET usage=? WHERE id=?",
+                            (encode(value), ident),
+                        )
+                        self.store.event(ident, "usage", value)
 
-                        gateway = ModelGateway(
-                            url,
-                            model,
-                            key,
-                            usage,
-                            flag,
-                            run["max_calls"],
-                            max_tokens=run["max_total_tokens"],
-                            transport=self.model_transport,
-                        )
-                        tools, events = self._tools(run, flag), AgentEvents()
+                    gateway = ModelGateway(
+                        url,
+                        model,
+                        key,
+                        usage,
+                        flag,
+                        run["max_calls"],
+                        max_tokens=run["max_total_tokens"],
+                        transport=self.model_transport,
+                    )
+                    tools, events = self._tools(run, flag), AgentEvents()
 
-                        def before(name, arguments):
-                            if flag.is_set():
-                                raise RuntimeError("任务已取消")
-                            self.store.event(
-                                ident,
-                                "tool.started",
-                                {
-                                    "name": name,
-                                    "arguments": self.redact(encode(arguments)),
-                                },
-                            )
-                            return name, arguments
+                    def before(name, arguments):
+                        if flag.is_set():
+                            raise RuntimeError("任务已取消")
+                        self.store.event(
+                            ident,
+                            "tool.started",
+                            {
+                                "name": name,
+                                "arguments": self.redact(encode(arguments)),
+                            },
+                        )
+                        return name, arguments
 
-                        def after(name, arguments, result):
-                            self.store.event(
-                                ident,
-                                "tool.completed",
-                                {
-                                    "name": name,
-                                    "result": self.redact(result),
-                                    "ok": name not in tools.tools_executor.unresolved,
-                                },
-                            )
-                            return name, arguments, result
+                    def after(name, arguments, result):
+                        self.store.event(
+                            ident,
+                            "tool.completed",
+                            {
+                                "name": name,
+                                "result": self.redact(result),
+                                "ok": name not in tools.tools_executor.unresolved,
+                            },
+                        )
+                        return name, arguments, result
 
-                        events.add_before_tool_call_handler(before)
-                        events.add_after_tool_call_handler(after)
-                        matches = self.router.search(run["task"])
-                        self.store.event(ident, "skills", matches)
-                        memories = self.store.all(
-                            "SELECT content FROM memories ORDER BY created DESC LIMIT 20"
+                    events.add_before_tool_call_handler(before)
+                    events.add_after_tool_call_handler(after)
+                    matches = self.router.search(run["task"])
+                    self.store.event(ident, "skills", matches)
+                    memories = self.store.all(
+                        "SELECT content FROM memories ORDER BY created DESC LIMIT 20"
+                    )
+                    recovery = previous_work(self.store, run)
+                    if recovery:
+                        self.store.event(ident, "context.restored", {
+                            "runs": len(recovery),
+                            "events": sum(len(item["events"]) for item in recovery),
+                        })
+                    prompt = build_system_prompt(
+                        run,
+                        matches,
+                        memories,
+                        self.store.directory
+                        / "workspaces"
+                        / run["conversation_id"],
+                        recovery=recovery,
+                    )
+                    context = TaskContext(
+                        run["task"],
+                        checkpoint=lambda messages: save_context(self.store, run, messages, self.redact),
+                        on_compact=lambda details: self.store.event(ident, "context.compacted", details),
+                    )
+                    agent = Agent(
+                        llm=gateway,
+                        tools=tools,
+                        events=events,
+                        system_prompt=prompt,
+                        context_manager=context,
+                        max_tool_loop=run["max_calls"],
+                        max_context_length=CONTEXT_INPUT_TOKENS,
+                        max_tool_result_length=64000,
+                    )
+                    history, restored = prior_messages(self.store, run)
+                    context.messages.extend(history)
+                    if history:
+                        self.store.event(ident, "context.checkpoint_restored", {
+                            "messages": len(history), "from_checkpoint": restored,
+                            "context_window_tokens": CONTEXT_WINDOW_TOKENS,
+                        })
+                    answered = False
+                    async for chunk in agent.apredict(instruction=run["task"]):
+                        if chunk.get("tool_calls"):
+                            if text:
+                                self.store.event(
+                                    ident, "assistant.progress", {"text": text}
+                                )
+                            text = ""
+                            answered = False
+                            continue
+                        if chunk.get("role") == "assistant" and chunk.get(
+                            "content"
+                        ):
+                            delta = chunk["content"]
+                            text += delta
+                            answered = True
+                            self.store.event(ident, "delta", {"text": delta})
+                    if not answered:
+                        gateway.check_budget()
+                        raise RuntimeError(
+                            "任务未形成最终答复，可能已达到工具调用预算"
                         )
-                        recovery = previous_work(self.store, run)
-                        if recovery:
-                            self.store.event(ident, "context.restored", {
-                                "runs": len(recovery),
-                                "events": sum(len(item["events"]) for item in recovery),
-                            })
-                        prompt = build_system_prompt(
-                            run,
-                            matches,
-                            memories,
-                            self.store.directory
-                            / "workspaces"
-                            / run["conversation_id"],
-                            recovery=recovery,
+                    if tools.tools_executor.unresolved:
+                        raise RuntimeError(
+                            "仍有未完成的工具操作："
+                            + safe_summary(tools.tools_executor.unresolved)
                         )
-                        agent = Agent(
-                            llm=gateway,
-                            tools=tools,
-                            events=events,
-                            system_prompt=prompt,
-                            context_manager=TaskContext(run["task"]),
-                            max_tool_loop=run["max_calls"],
-                            max_context_length=MAX_CONTEXT_CHARS,
-                            max_tool_result_length=16000,
-                        )
-                        history = self.store.all(
-                            "SELECT role,content FROM messages WHERE conversation_id=? ORDER BY created DESC LIMIT 20",
-                            (run["conversation_id"],),
-                        )
-                        for message in list(reversed(history))[0:-1]:
-                            agent.add_message(
-                                role=message["role"], content=message["content"][:10000]
-                            )
-                        answered = False
-                        async for chunk in agent.apredict(instruction=run["task"]):
-                            if chunk.get("tool_calls"):
-                                if text:
-                                    self.store.event(
-                                        ident, "assistant.progress", {"text": text}
-                                    )
-                                text = ""
-                                answered = False
-                                continue
-                            if chunk.get("role") == "assistant" and chunk.get(
-                                "content"
-                            ):
-                                delta = chunk["content"]
-                                text += delta
-                                answered = True
-                                self.store.event(ident, "delta", {"text": delta})
-                        if not answered:
-                            gateway.check_budget()
-                            raise RuntimeError(
-                                "任务未形成最终答复，可能已达到工具调用预算"
-                            )
-                        if tools.tools_executor.unresolved:
-                            raise RuntimeError(
-                                "仍有未完成的工具操作："
-                                + safe_summary(tools.tools_executor.unresolved)
-                            )
-                    status = "completed"
+                status = "completed"
         except asyncio.CancelledError:
             flag.set()
             status, error = "cancelled", "任务已取消；已发送的外部模型请求无法撤回。"
@@ -770,43 +851,56 @@ class TaskManager:
         except Exception as exc:
             error = self.redact(str(exc))
         finally:
-            if flag.is_set():
-                if tools:
-                    await tools.tools_executor.drain()
-                if pending_operation:
-                    pending_operation.cancel()
-                    await asyncio.gather(pending_operation, return_exceptions=True)
-            # A queued cancellation is persisted before the coroutine wakes.
-            # Do not emit its terminal event twice if it was waiting for a slot.
-            current = self.store.one("SELECT status FROM runs WHERE id=?", (ident,))
-            if current and current["status"] == "cancelled":
+            async def finish():
+                nonlocal text, error
+                if flag.is_set():
+                    if tools:
+                        await tools.tools_executor.drain()
+                        if tools.tools_executor.remote_stop_unconfirmed:
+                            error = "本轮已停止继续调度，但远端命令的停止尚未确认；请检查服务器连接与进程。"
+                    if pending_operation:
+                        pending_operation.cancel()
+                        await asyncio.gather(pending_operation, return_exceptions=True)
+                # A queued cancellation is persisted before the coroutine wakes.
+                # Do not emit its terminal event twice if it was waiting for a slot.
+                current = self.store.one("SELECT status FROM runs WHERE id=?", (ident,))
+                if current and current["status"] == "cancelled":
+                    self.tasks.pop(ident, None)
+                    self.cancellations.pop(ident, None)
+                    return
+                if text and status != "completed":
+                    self.store.event(ident, "assistant.progress", {"text": text})
+                    text = ""
+                if text:
+                    self.store.message(
+                        self.store.one(
+                            "SELECT conversation_id FROM runs WHERE id=?", (ident,)
+                        )["conversation_id"],
+                        "assistant",
+                        text,
+                        run_id=ident,
+                    )
+                if context is not None:
+                    save_context(self.store, run, context.messages, self.redact)
+                self.store.execute(
+                    "UPDATE runs SET status=?,result=?,error=?,updated=? WHERE id=?",
+                    (status, text, error, now(), ident),
+                )
+                self.store.event(ident, "finished", {"status": status, "error": error})
                 self.tasks.pop(ident, None)
                 self.cancellations.pop(ident, None)
-                return
-            if text and status != "completed":
-                self.store.event(ident, "assistant.progress", {"text": text})
-                text = ""
-            if text:
-                self.store.message(
-                    self.store.one(
-                        "SELECT conversation_id FROM runs WHERE id=?", (ident,)
-                    )["conversation_id"],
-                    "assistant",
-                    text,
-                )
-            self.store.execute(
-                "UPDATE runs SET status=?,result=?,error=?,updated=? WHERE id=?",
-                (status, text, error, now(), ident),
-            )
-            self.store.event(ident, "finished", {"status": status, "error": error})
-            self.tasks.pop(ident, None)
-            self.cancellations.pop(ident, None)
+
+            cleanup = asyncio.create_task(finish())
+            while not cleanup.done():
+                try:
+                    await asyncio.shield(cleanup)
+                except asyncio.CancelledError:
+                    flag.set()
+            await cleanup
 
     async def close(self):
         tasks = list(self.tasks.values())
-        for flag in self.cancellations.values():
-            flag.set()
-        for task in tasks:
-            task.cancel()
+        for ident in list(self.tasks):
+            self.cancel(ident)
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)

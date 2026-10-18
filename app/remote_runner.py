@@ -1,0 +1,130 @@
+"""A per-command remote process group, controlled through SSH stdin and a nonce."""
+
+import base64
+import json
+import os
+from pathlib import Path
+import re
+import signal
+import subprocess
+import sys
+import threading
+import time
+
+
+def process_identity(pid):
+    try:
+        fields = Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()
+        return fields[19]
+    except FileNotFoundError:
+        return None
+
+
+def living_group(group):
+    for item in Path("/proc").iterdir():
+        if not item.name.isdigit():
+            continue
+        try:
+            fields = (item / "stat").read_text().rsplit(")", 1)[1].split()
+            if fields[0] != "Z" and int(fields[2]) == group:
+                return True
+        except (FileNotFoundError, ProcessLookupError):
+            pass
+    return False
+
+
+def stop_group(record):
+    group = record["pid"]
+    identity = process_identity(group)
+    if identity is not None and identity != record["identity"]:
+        raise RuntimeError("Remote process identity changed; refusing to signal it")
+    for sig, wait in ((signal.SIGTERM, 0.4), (signal.SIGKILL, 1.5)):
+        try:
+            os.killpg(group, sig)
+        except ProcessLookupError:
+            return True
+        end = time.monotonic() + wait
+        while time.monotonic() < end:
+            if not living_group(group):
+                return True
+            time.sleep(0.03)
+    return not living_group(group)
+
+
+def job_directory(nonce):
+    if not re.fullmatch(r"[a-f0-9]{32}", nonce):
+        raise ValueError("Invalid command identity")
+    directory = Path("/tmp") / ("xinxin-command-" + nonce)
+    directory.mkdir(mode=0o700, exist_ok=True)
+    if directory.is_symlink() or directory.stat().st_uid != os.getuid():
+        raise RuntimeError("Remote command directory ownership mismatch")
+    return directory
+
+
+def save_record(directory, record):
+    temporary = directory / (".record-" + str(os.getpid()))
+    temporary.write_text(json.dumps(record))
+    temporary.chmod(0o600)
+    temporary.replace(directory / "process.json")
+
+
+def cancel(nonce):
+    directory = job_directory(nonce)
+    (directory / "cancel").touch(mode=0o600)
+    path = directory / "process.json"
+    if not path.exists():
+        # A late starter observes the marker before launching its child.
+        return {"confirmed": True, "state": "not_started"}
+    record = json.loads(path.read_text())
+    if record.get("state") != "running" and record.get("confirmed_stopped"):
+        return {"confirmed": True, "state": "already_stopped"}
+    stopped = stop_group(record)
+    return {"confirmed": stopped, "state": "stopped" if stopped else "unconfirmed"}
+
+
+def run(nonce, encoded, timeout):
+    directory = job_directory(nonce)
+    disconnected = threading.Event()
+
+    def watch_connection():
+        try:
+            sys.stdin.buffer.read(1)
+        finally:
+            disconnected.set()
+
+    threading.Thread(target=watch_connection, daemon=True).start()
+    if disconnected.is_set() or (directory / "cancel").exists():
+        return 125
+    command = base64.b64decode(encoded, validate=True).decode("utf-8")
+    process = subprocess.Popen(
+        ["/bin/sh", "-c", command], stdin=subprocess.DEVNULL,
+        stdout=sys.stdout, stderr=sys.stderr, start_new_session=True,
+    )
+    record = {"pid": process.pid, "identity": process_identity(process.pid), "state": "running"}
+    save_record(directory, record)
+    deadline = time.monotonic() + timeout
+    reason = "finished"
+    try:
+        while process.poll() is None:
+            if disconnected.is_set() or (directory / "cancel").exists():
+                reason = "cancelled"
+                break
+            if time.monotonic() >= deadline:
+                reason = "timeout"
+                break
+            time.sleep(0.04)
+    finally:
+        stopped = stop_group(record)
+        try:
+            process.wait(timeout=2)
+        except subprocess.TimeoutExpired:
+            stopped = False
+        save_record(directory, {**record, "state": reason, "confirmed_stopped": stopped})
+    return 124 if reason == "timeout" else 125 if reason == "cancelled" else process.returncode
+
+
+if __name__ == "__main__":
+    if sys.argv[1] == "stop":
+        print(json.dumps(cancel(sys.argv[2])))
+    else:
+        raise SystemExit(run(sys.argv[2], sys.argv[3], min(1800, max(1, int(sys.argv[4])))))

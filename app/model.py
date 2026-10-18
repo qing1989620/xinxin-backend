@@ -5,7 +5,9 @@ from urllib.parse import urlsplit
 
 import httpx
 
-from .config import DEFAULT_MODEL_CALLS, TOKENS_PER_MODEL_CALL
+from .config import DEFAULT_MODEL_CALLS, TOKENS_PER_MODEL_CALL, CONTEXT_WINDOW_TOKENS
+from .context import token_count
+from .store import encode
 
 
 class ModelBudgetExceeded(RuntimeError):
@@ -58,6 +60,7 @@ class ModelGateway:
         self.calls, self.tokens = 0, 0
         self.request_tokens = 0
         self.transport = transport
+        self.context_tokens = 0
 
     async def apredict(self, messages, tools=None, stream=False, **kwargs):
         if self.cancelled.is_set():
@@ -70,12 +73,16 @@ class ModelGateway:
             "model": self.model,
             "messages": messages,
             "stream": stream,
-            "max_tokens": min(4096, self.max_tokens - self.tokens),
+            "max_tokens": min(16384, self.max_tokens - self.tokens),
             "temperature": 0.5,
             "thinking": {"type": "disabled"},
         }
         if tools:
             payload["tools"] = tools
+        self.context_tokens = token_count(encode(payload)) + 1024
+        if self.context_tokens + payload["max_tokens"] > CONTEXT_WINDOW_TOKENS:
+            raise RuntimeError("本次请求超过1M上下文窗口；历史仍保存在当前对话，请先压缩或分批处理。")
+        self.record_usage(self.usage())
         if stream:
             payload["stream_options"] = {"include_usage": True}
             return self._stream(payload)
@@ -124,6 +131,8 @@ class ModelGateway:
             "total_tokens": self.tokens,
             "max_calls": self.max_calls,
             "max_total_tokens": self.max_tokens,
+            "context_window_tokens": CONTEXT_WINDOW_TOKENS,
+            "context_tokens_estimate": self.context_tokens,
         }
 
     def check_budget(self):

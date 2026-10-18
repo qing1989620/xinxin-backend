@@ -41,6 +41,10 @@ class Store:
                 CREATE TABLE IF NOT EXISTS memories(id TEXT PRIMARY KEY,content TEXT NOT NULL,category TEXT NOT NULL,created INTEGER NOT NULL);
                 CREATE TABLE IF NOT EXISTS schedules(id TEXT PRIMARY KEY,title TEXT NOT NULL,task TEXT NOT NULL,interval_minutes INTEGER NOT NULL,next_at INTEGER NOT NULL,enabled INTEGER NOT NULL DEFAULT 1);
                 CREATE TABLE IF NOT EXISTS audit(id TEXT PRIMARY KEY,action TEXT NOT NULL,data TEXT NOT NULL,created INTEGER NOT NULL);
+                CREATE TABLE IF NOT EXISTS run_context(run_id TEXT PRIMARY KEY,conversation_id TEXT NOT NULL,messages TEXT NOT NULL,message_cursor INTEGER NOT NULL,updated INTEGER NOT NULL);
+                CREATE INDEX IF NOT EXISTS context_conversation ON run_context(conversation_id,updated);
+                CREATE TABLE IF NOT EXISTS run_plan(run_id TEXT PRIMARY KEY,conversation_id TEXT NOT NULL,steps TEXT NOT NULL,updated INTEGER NOT NULL);
+                CREATE TABLE IF NOT EXISTS message_runs(message_id TEXT PRIMARY KEY,run_id TEXT NOT NULL);
                 CREATE INDEX IF NOT EXISTS messages_conversation ON messages(conversation_id,created);
                 CREATE INDEX IF NOT EXISTS records_kind ON records(kind,updated);
                 CREATE INDEX IF NOT EXISTS runs_created ON runs(created);
@@ -150,7 +154,7 @@ class Store:
             "INSERT INTO audit VALUES(?,?,?,?)", (uid(), action, encode(data), now())
         )
 
-    def message(self, conversation_id, role, content):
+    def message(self, conversation_id, role, content, run_id=None):
         ident = uid()
         self.execute(
             "INSERT INTO messages VALUES(?,?,?,?,?)",
@@ -159,4 +163,6 @@ class Store:
         self.execute(
             "UPDATE conversations SET updated=? WHERE id=?", (now(), conversation_id)
         )
+        if run_id:
+            self.execute("INSERT INTO message_runs VALUES(?,?)", (ident, run_id))
         return ident

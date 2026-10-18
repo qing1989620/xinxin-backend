@@ -26,8 +26,12 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from .agent import TaskManager
 from .auth import Auth, password_hash, password_matches
-from .config import Config, ROOT, DEFAULT_MODEL_CALLS, DEFAULT_TASK_SECONDS
+from .config import (
+    Config, ROOT, DEFAULT_MODEL_CALLS, DEFAULT_TASK_SECONDS,
+    TOKENS_PER_MODEL_CALL, CONTEXT_WINDOW_TOKENS, CONTEXT_INPUT_TOKENS,
+)
 from .creative import gallery, plot_csv, transform_image
+from .conversations import deletion_preview, purge_conversation
 from .files import FileLibrary, FileTooLarge, UploadConflict
 from .model import endpoint
 from .mail import MailCodes
@@ -93,9 +97,9 @@ class RunInput(Input):
     conversation_id: str | None = None
     permission: Literal["read", "workspace", "full"] = "read"
     server_id: str | None = None
-    max_calls: int = Field(default=DEFAULT_MODEL_CALLS, ge=1, le=20)
-    max_seconds: int = Field(default=DEFAULT_TASK_SECONDS, ge=10, le=1800)
-    max_total_tokens: int | None = Field(default=None, ge=5000, le=1000000)
+    max_calls: int = Field(default=DEFAULT_MODEL_CALLS, ge=1, le=128)
+    max_seconds: int = Field(default=DEFAULT_TASK_SECONDS, ge=10, le=7200)
+    max_total_tokens: int | None = Field(default=None, ge=5000, le=100000000)
     request_key: str = Field(min_length=8, max_length=100)
     file_ids: list[str] = Field(default_factory=list, max_length=10)
     allow_memory: bool = False
@@ -441,7 +445,8 @@ def create_app(config=None):
         return {
             **row,
             "messages": store.all(
-                "SELECT * FROM messages WHERE conversation_id=? ORDER BY created",
+                "SELECT m.*,mr.run_id FROM messages m LEFT JOIN message_runs mr "
+                "ON mr.message_id=m.id WHERE m.conversation_id=? ORDER BY m.created,m.rowid",
                 (ident,),
             ),
             "runs": store.all(
@@ -449,6 +454,32 @@ def create_app(config=None):
                 (ident,),
             ),
         }
+
+    @app.get("/api/v1/conversations/{ident}/deletion-preview", dependencies=[Depends(owner)])
+    async def preview_conversation_deletion(ident: str):
+        require_row("conversations", ident)
+        return await asyncio.to_thread(deletion_preview, store, ident)
+
+    @app.delete("/api/v1/conversations/{ident}/permanent", dependencies=[Depends(owner)])
+    async def erase_conversation(ident: str):
+        require_row("conversations", ident)
+        if manager.maintenance.is_set() or store.one(
+            "SELECT id FROM runs WHERE status IN ('queued','running','cancelling') LIMIT 1"
+        ):
+            raise HTTPException(409, "请先停止运行任务，再永久删除对话")
+        manager.maintenance.set()
+        pending = asyncio.create_task(asyncio.to_thread(purge_conversation, store, library, ident))
+        try:
+            return await asyncio.shield(pending)
+        finally:
+            try:
+                while not pending.done():
+                    try:
+                        await asyncio.shield(pending)
+                    except asyncio.CancelledError:
+                        continue
+            finally:
+                manager.maintenance.clear()
 
     @app.delete("/api/v1/conversations/{ident}", dependencies=[Depends(owner)])
     def delete_conversation(ident: str):
@@ -523,6 +554,25 @@ def create_app(config=None):
                 for row in store.all("SELECT id FROM files WHERE run_id=?", (ident,))
             ],
         }
+
+    @app.get("/api/v1/runs/{ident}/activity", dependencies=[Depends(owner)])
+    def activity(ident: str):
+        require_row("runs", ident)
+        rows = store.all(
+            "SELECT * FROM events WHERE run_id=? AND kind NOT IN ('delta','usage','skills') "
+            "ORDER BY seq DESC LIMIT 5000", (ident,),
+        )
+        commands = set()
+        result = []
+        for row in rows:
+            data = json.loads(row["data"])
+            if row["kind"] == "command.progress":
+                command = data["command_id"]
+                if command in commands:
+                    continue
+                commands.add(command)
+            result.append({**row, "data": data})
+        return list(reversed(result))
 
     @app.post("/api/v1/runs/{ident}/cancel", dependencies=[Depends(owner)])
     async def cancel(ident: str):
@@ -869,7 +919,20 @@ def create_app(config=None):
                 store.directory / "skills/scenes-gathered-zine-v1-3/SKILL.md"
             ).exists(),
             "registration": "disabled",
-            "capabilities": {"run_token_budget": True, "run_recovery": True},
+            "context_window_tokens": CONTEXT_WINDOW_TOKENS,
+            "context_input_budget_tokens": CONTEXT_INPUT_TOKENS,
+            "context_counting": "DeepSeek-V4.1 BPE with protocol/output reserve",
+            "execution_defaults": {
+                "max_calls": DEFAULT_MODEL_CALLS, "max_seconds": DEFAULT_TASK_SECONDS,
+                "max_total_tokens": DEFAULT_MODEL_CALLS * TOKENS_PER_MODEL_CALL,
+            },
+            "execution_limits": {"max_calls": 128, "max_seconds": 7200, "max_total_tokens": 100000000},
+            "capabilities": {
+                "run_token_budget": True, "run_recovery": True,
+                "context_checkpoints": True, "command_progress": True,
+                "managed_ssh_cancellation": True,
+                "conversation_delete": True,
+            },
         }
 
     @app.put("/api/v1/settings", dependencies=[Depends(owner)])

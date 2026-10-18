@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import os
+import base64
+import json
 import re
 import select
 import shlex
@@ -9,6 +11,7 @@ import signal
 import subprocess
 import threading
 import time
+import uuid
 from pathlib import Path
 
 PERMISSIONS = {"read": 0, "workspace": 1, "full": 2}
@@ -65,7 +68,7 @@ def process_group_active(pid):
         return False
 
 
-def execute_process(command, cwd, cancelled, timeout=90):
+def execute_process(command, cwd, cancelled, timeout=90, *, on_output=None, keep_stdin=False):
     env = {
         k: v
         for k, v in os.environ.items()
@@ -91,6 +94,7 @@ def execute_process(command, cwd, cancelled, timeout=90):
         command,
         cwd=str(cwd),
         stdout=subprocess.PIPE,
+        stdin=subprocess.PIPE if keep_stdin else subprocess.DEVNULL,
         stderr=subprocess.STDOUT,
         env=env,
         start_new_session=os.name != "nt",
@@ -128,11 +132,27 @@ def execute_process(command, cwd, cancelled, timeout=90):
                 over_limit = True
                 break
 
-    deadline = time.monotonic() + timeout
+    started = time.monotonic()
+    deadline = started + timeout
     reason = ""
+    last_progress, last_size = 0, -1
+
+    def progress(final=False):
+        nonlocal last_progress, last_size
+        if on_output is None:
+            return
+        elapsed = time.monotonic() - started
+        changed = total != last_size
+        if final or elapsed - last_progress >= (0.6 if changed else 4) or last_size < 0:
+            raw = b"".join(parts).decode("utf-8", "replace")
+            # Do not publish a half-written credential at the end of a line.
+            complete = raw if final else raw[: raw.rfind("\n") + 1]
+            on_output(complete, round(elapsed, 1), total)
+            last_progress, last_size = elapsed, total
     try:
         while True:
             consume_available()
+            progress()
             parent_done = process.poll() is not None
             descendants = scope.active() if scope else process_group_active(process.pid)
             if cancelled.is_set() or time.monotonic() > deadline or over_limit:
@@ -149,6 +169,7 @@ def execute_process(command, cwd, cancelled, timeout=90):
         consume_available()
         if over_limit and not reason:
             reason = "output_limit"
+        progress(final=True)
         return {
             "exit_code": process.returncode,
             "output": b"".join(parts).decode("utf-8", "replace"),
@@ -156,6 +177,8 @@ def execute_process(command, cwd, cancelled, timeout=90):
             "ok": process.returncode == 0 and not reason,
         }
     finally:
+        if process.stdin:
+            process.stdin.close()
         if scope:
             scope.close()
         else:
@@ -163,7 +186,7 @@ def execute_process(command, cwd, cancelled, timeout=90):
         process.stdout.close()
 
 
-def run_command(policy, command, timeout=90):
+def run_command(policy, command, timeout=300, *, on_output=None):
     policy.require("full")
     if not command.strip() or len(command) > 12000:
         raise ValueError("命令为空或过长")
@@ -173,18 +196,21 @@ def run_command(policy, command, timeout=90):
         else ["/bin/sh", "-c", command]
     )
     return execute_process(
-        executable, policy.workspace, policy.cancelled, min(timeout, 300)
+        executable, policy.workspace, policy.cancelled, min(timeout, 1800), on_output=on_output
     )
 
 
-def remote_command(policy, server, key_path, command, known_hosts, timeout=120):
+def remote_command(policy, server, key_path, command, known_hosts, timeout=300, *, on_output=None):
     policy.require("full")
     if not re.fullmatch(r"[A-Za-z0-9_.:-]+", server["host"]) or not re.fullmatch(
         r"[A-Za-z0-9_.-]+", server["username"]
     ):
         raise ValueError("服务器地址或用户无效")
+    if not command.strip() or len(command) > 64000:
+        raise ValueError("命令为空或过长")
     args = [
         "ssh",
+        "-T",
         "-o",
         "BatchMode=yes",
         "-o",
@@ -193,12 +219,36 @@ def remote_command(policy, server, key_path, command, known_hosts, timeout=120):
         f"UserKnownHostsFile={known_hosts}",
         "-o",
         "ConnectTimeout=10",
+        "-o",
+        "ServerAliveInterval=5",
+        "-o",
+        "ServerAliveCountMax=2",
         "-p",
         str(server["port"]),
         "-i",
         str(key_path),
         "--",
         f"{server['username']}@{server['host']}",
-        command,
     ]
-    return execute_process(args, policy.workspace, policy.cancelled, timeout)
+    nonce = uuid.uuid4().hex
+    source = Path(__file__).with_name("remote_runner.py").read_text(encoding="utf-8")
+    prefix = "python3 -c " + shlex.quote(source)
+    duration = max(1, min(1800, int(timeout)))
+    encoded = base64.b64encode(command.encode("utf-8")).decode("ascii")
+    remote = f"{prefix} run {nonce} {encoded} {duration}"
+    result = execute_process(
+        args + [remote], policy.workspace, policy.cancelled, duration + 3,
+        on_output=on_output, keep_stdin=True,
+    )
+    if result["stopped"] or policy.cancelled.is_set():
+        cleanup = execute_process(
+            args + [f"{prefix} stop {nonce}"], policy.workspace, threading.Event(), 5,
+        )
+        try:
+            confirmed = cleanup["ok"] and json.loads(cleanup["output"])["confirmed"]
+        except (ValueError, KeyError):
+            confirmed = False
+        result["remote_stop_confirmed"] = bool(confirmed)
+        if not confirmed:
+            result["output"] += "\n远端停止尚未确认；不会自动重试原命令，请核对连接和进程。"
+    return result

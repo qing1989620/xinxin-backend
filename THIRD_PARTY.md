@@ -2,6 +2,8 @@
 
 This is a personal private project. No blanket open-source license is assigned to all included material.
 
+- `resources/deepseek-tokenizer`: official `deepseek-ai/DeepSeek-V4.1-Flash` tokenizer/configuration at `314113f8a7dadb388215396ba5fbee2c610a04d6`, MIT, Copyright (c) 2023 DeepSeek. Original license and per-file SHA-256/size are retained with provenance. Only the approximately 6.4MB tokenizer is bundled; no language-model weights. Offline BPE counts reserve room for tool protocol and output; provider-reported usage remains the billing source.
+
 - `resources/skills/packages`: 30 unchanged reference packages selected from the pinned SkillNet community snapshot. Each file's original SHA-256 and size, source repository/commit/URL and license are retained in `resources/skills/catalog.json`; [selection and attribution](resources/skills/README.md). Code licenses include MIT and CC0-1.0; agentic original documentation is CC BY 4.0 unless a more specific upstream notice applies. Chinese summaries and base-tool relationships are marked as platform adaptations. Scripts are reference data, not automatically trusted executables.
 
 - `vendor/tina`: XIMOCY/tina `478680471a22cafa9c043a8cb11643b233d820ae`, Apache-2.0, license retained. The original package is kept intact; platform adapters fix instance isolation and execution control without editing it.
