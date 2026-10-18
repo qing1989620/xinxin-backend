@@ -1,6 +1,6 @@
 # Agent 长任务执行审查
 
-2026-10-18。固定原基线 `d345c5b`；最终代码目标 `b452570`，随后 `e556242` 仅更新测试结果。规格为 [agent-runtime-spec.md](agent-runtime-spec.md)。按指定 [mattpocock code-review 技能](https://github.com/mattpocock/skills/tree/main/skills/engineering/code-review) 使用独立 Standards / Spec 两轴，不把模拟测试当成真实云端交付。
+2026-10-18。固定原基线 `d345c5b`；最终部署代码 `47bfc5f`，后续只补测试与证据文档。规格为 [agent-runtime-spec.md](agent-runtime-spec.md)。按指定 [mattpocock code-review 技能](https://github.com/mattpocock/skills/tree/main/skills/engineering/code-review) 使用独立 Standards / Spec 两轴，不把模拟测试当成真实云端交付。
 
 ## Standards
 
@@ -14,10 +14,13 @@
 
 最终阻塞残留 0，范围扩张 0。独立验证包括临时根链接、会话档位重启持久化、运行冻结/重试、旧请求兼容、本地取消分类、启动屏障和登记异常收尾。审查没有使用正式数据、真实信号或远端操作。
 
+真实模型验收另发现正常命令结束时，daemon `BufferedReader` 导致 CPython `_enter_buffered_busy` 崩溃并被识别为 SSH255。前两次验收失败，未记为通过。已删除读取线程，改为 `select` + 原始描述符轮询；Standards 与 Spec 均对 `47bfc5f` 独立复验通过，包括正常、EOF、取消、超时与身份保护。没有忽略错误或强行改成功状态。
+
 ## 实施验证
 
-- 完整本地后端回归：118 项通过，见 [JUnit](verification/agent-runtime-tests.xml)。模型与 SSH 故障用隔离夹具，不冒称真实 provider。
-- 真实 Linux 模块级预检：SSH stdin 断开 0.064 秒，显式控制停止 1.292 秒；未产生预设延迟副作用。该数据仅证明受控命令模块，不等于 HTTP/Tina 全链路。
+- 完整本地后端回归：121 项通过，见 [JUnit](verification/agent-runtime-tests.xml)。模型与 SSH 故障用隔离夹具，不冒称真实 provider。
+- 最终真实 Linux 模块级预检：保持 stdin 打开仍正常退出 0；断开、显式停止均退出125，无解释器崩溃。三项分别0.165、0.033、0.102秒，仅证明受控命令模块。
 - 持久历史超过原 60,000 字符限制并经过应用重启；工具交换完整性、公开日志脱敏、重复取消和槽位收尾、对话清理回滚与外部根链接均有专门回归。
-- 新模型的原生窗口为 1,048,576；80K、300K、1000K 是每会话选择，累计 token 用量独立计算。工具输出仍有限流/有界日志，不能解释为任意大文件一次全部进入模型。
-- 云端全链路验收另存运行结果，验收结果未生成前不视为实际任务已通过。
+- 新模型的原生窗口为 1,048,576；80K、300K、1000K 是每会话选择，累计 token 用量独立计算。三项 BPE 回归证明超过300K tokens的历史在1000K档完整保留，较小档位回收旧组且保留目标。没有向远程模型发送满1M压力请求。工具输出仍有界，不能解释为任意大文件一次全部进入模型。
+- [最终云端实测](agent-runtime-runtime.json)：标准TLS私有HTTPS→Tina→root SSH，实时输出后15次取消0.633秒确认，子进程退出且没有延迟写入；同会话读取上传CSV、独立生成标准库脚本和业务测试、核验金额汇总、运行并停止瞬时回环HTTP服务，49.476秒、14次模型调用、16次工具操作、154617累计tokens。断线游标回放、公开计划/进度、检查点、档位冻结、永久删除自己的合成会话及独立上传保留均通过。
+- 验收后活动任务0，合成目录/unit清理、原始失败记录保留、既有服务健康、升级前备份成功。API RSS约579MiB、cgroup约523MiB，主机可用约2.35GiB；这是当时样本，不是大构建或满1M上下文的峰值保证。

@@ -67,7 +67,7 @@ python -m pip install -e '.[test]'
 python -m pytest -q
 ```
 
-离线模型替身测试真实 Tina 工具循环，不消耗模型费用或连接真实服务器。[API 契约](docs/openapi.json)、[需求](docs/product-spec.md)、[来源许可](THIRD_PARTY.md)、[双轴审查](docs/code-review.md)。最新后端102项测试通过，包含执行预算、失败事实恢复、上下文保留和新旧客户端兼容，见 [执行续接规格](docs/execution-recovery-spec.md) 与 [审查及云端实测](docs/execution-recovery-review.md)。常规预算为16次调用、900秒；累计令牌可显式设置，未指定时按每次20000计算。云端真实DeepSeek与SSH已完成10次模型调用、9次工具操作和64304累计令牌的隔离续接验收。SMTP实际送达和图像转换仍待服务授权。
+离线模型替身测试真实 Tina 工具循环，不消耗模型费用或连接真实服务器。[API 契约](docs/openapi.json)、[需求](docs/product-spec.md)、[来源许可](THIRD_PARTY.md)。最新后端121项测试通过；按每会话持久保存80K/300K/1000K上下文，原生完整档位1,048,576，预留协议与输出，累计用量独立。常规64次调用、3600秒、8,000,000累计tokens；旧记录保留旧预算。公开计划、模型进度与命令输出持久化；幂等取消等清理确认后再结束；检查点恢复完整有效交换。永久删除与归档分开，保留独立上传、共享产物及服务器项目。见 [执行规格](docs/agent-runtime-spec.md)、[最终双轴复验](docs/agent-runtime-review.md) 和 [真实云端结果](docs/agent-runtime-runtime.json)：取消0.633秒；上传CSV→写脚本/测试→临时HTTP核验与停止用49.476秒、14次模型调用和16次工具操作完成。SMTP实际送达和图像转换仍待服务授权。
 
 邮箱支持绑定单主人、验证码登录及找回密码，QQ SMTP 默认 465 SSL/TLS；授权码在设置中加密保存。没有授权码会明确提示不可用。6 位验证码 10 分钟有效、单次消费、最多 5 次失败、60 秒冷却与持久发送配额；重置密码撤销旧会话。
 

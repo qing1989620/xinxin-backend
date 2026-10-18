@@ -1,0 +1,82 @@
+{
+  "scope": "Real provider over private HTTPS, Tina, managed root SSH; own synthetic conversation, uploaded CSV and transient loopback service only. No replay of owner tasks.",
+  "backend_code_revision": "47bfc5fcaacbe90b4ec2276ab8345243a831fc1a",
+  "frontend_code_revision": "6fc4d341242e9ccfc97e039ca453cb9e180b43ed",
+  "physical_phone_verified_on_this_revision": false,
+  "same_configuration_competitor_benchmark": false,
+  "checks": {
+    "three_context_tiers_advertised": true,
+    "repeated_cancel_idempotent": true,
+    "remote_stop_confirmed": true,
+    "cancelled_child_not_alive": true,
+    "no_late_side_effect": true,
+    "active_tier_switch_and_deletion_refused": true,
+    "live_output_before_finish": true,
+    "uploaded_file_read_by_real_model": true,
+    "standard_library_code_and_money_result_correct": true,
+    "actual_unit_tests_passed": true,
+    "transient_loopback_service_verified_and_stopped": true,
+    "checkpoint_restored_after_cancel_without_repeating_side_effect": true,
+    "plan_and_public_progress_persisted": true,
+    "sse_replay_exact": true,
+    "future_context_choice_does_not_change_completed_run": true,
+    "signed_apk_served_with_matching_sha256": true,
+    "own_synthetic_conversation_permanently_erased": true,
+    "independent_upload_survives_conversation_erasure": true
+  },
+  "runs": [
+    {
+      "task": "managed_ssh_cancel",
+      "status": "cancelled",
+      "elapsed_seconds": 3.961,
+      "model_calls": 1,
+      "total_tokens": 5353,
+      "context_window_tokens": 80000,
+      "context_tokens_estimate": 5989,
+      "tool_completions": 0
+    },
+    {
+      "task": "uploaded_csv_code_test_and_http_delivery",
+      "status": "completed",
+      "elapsed_seconds": 49.476,
+      "model_calls": 14,
+      "total_tokens": 154617,
+      "context_window_tokens": 300000,
+      "context_tokens_estimate": 18501,
+      "tool_completions": 16
+    }
+  ],
+  "cancel_seconds_after_live_output": 0.633,
+  "apk_sha256": "21b3509cd43b991f379aae6d6fcfded3ed79e32ccd32956bb1064e3f2588bc9b",
+  "post_run": {
+    "active_tasks": 0,
+    "synthetic_directory_removed": true,
+    "synthetic_unit_stopped": true,
+    "synthetic_runs_erased": true,
+    "original_failed_records_preserved": true,
+    "verified_backup_before_activation": true,
+    "services": {
+      "xinxin-backend": {
+        "active": true,
+        "memory_current_bytes": 548376576,
+        "rss_bytes": 607473664
+      },
+      "xinxin-web": {
+        "active": true,
+        "memory_current_bytes": 53161984,
+        "rss_bytes": 32899072
+      },
+      "tailscaled": {
+        "active": true,
+        "memory_current_bytes": 13303808,
+        "rss_bytes": 39493632
+      }
+    },
+    "host_mem_available_bytes": 2519871488,
+    "loopback_gateway_health": "ok"
+  },
+  "earlier_failed_acceptance_attempts": {
+    "count": 2,
+    "cause": "Blocked daemon BufferedReader aborted the remote supervisor at normal shutdown; fixed by raw descriptor polling. Earlier attempts were failures, not counted as passes."
+  }
+}
