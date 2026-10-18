@@ -114,6 +114,8 @@ def run(nonce, encoded, timeout):
                 break
             time.sleep(0.04)
     finally:
+        if disconnected.is_set() or (directory / "cancel").exists():
+            reason = "cancelled"
         stopped = stop_group(record)
         try:
             process.wait(timeout=2)
