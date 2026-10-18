@@ -90,7 +90,22 @@ def test_waiting_explanations_are_bounded_honest_redacted_and_settled(client):
     assert "不能仅凭静默判断" in events[-1]["text"]
     assert secret not in json.dumps(events)
     narrator.after("run_remote_command", True, '{"ok":true,"exit_code":0}')
+    narrator.finish_waits("one")
     assert events[-1]["finished"] and "退出码 0" in events[-2]["text"]
+
+
+def test_parallel_commands_settle_only_their_own_waiting_state(client):
+    events = []
+    narrator = ProgressNarrator(lambda kind, data: events.append({"kind": kind, **data}), client.app.state.manager.redact)
+    narrator.command("one", "run_remote_command", "first", "", 20, 0)
+    narrator.command("two", "run_remote_command", "second", "", 20, 0)
+    narrator.finish_waits("one")
+    assert events[-1]["command_id"] == "one" and events[-1]["finished"]
+    assert not narrator.waits["two"].get("done")
+    narrator.command("two", "run_remote_command", "second", "", 52, 0)
+    assert events[-1]["command_id"] == "two" and not events[-1]["finished"]
+    narrator.finish_waits()
+    assert events[-1]["command_id"] == "two" and events[-1]["finished"]
 
 
 def test_batch_delete_is_atomic_and_excludes_only_selected_references(client):

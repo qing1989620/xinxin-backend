@@ -425,7 +425,11 @@ class TaskManager:
                 if progress:
                     progress.command(command_id, name, purpose, sanitized, elapsed, byte_count)
 
-            return emit
+            def finish():
+                if progress:
+                    progress.finish_waits(command_id)
+
+            return emit, finish
 
         @tools.register()
         def report_progress(summary: str, next_step: str = ""):
@@ -566,7 +570,11 @@ class TaskManager:
         @tools.register()
         def execute_command(command: str, timeout: int = 300, purpose: str = ""):
             """Run on the backend host with live output; full permission. timeout is 1–1800 seconds. Do not detach with nohup or &: cancellation owns this command group."""
-            return run_command(policy, command, timeout, on_output=command_progress("execute_command", purpose))
+            output, finish = command_progress("execute_command", purpose)
+            try:
+                return run_command(policy, command, timeout, on_output=output)
+            finally:
+                finish()
 
         @tools.register()
         def list_servers():
@@ -599,13 +607,15 @@ class TaskManager:
             )
             key_path.write_text(key.rstrip() + "\n", encoding="utf-8")
             hosts.write_text(server["host_key"] + "\n", encoding="utf-8")
+            output, finish = command_progress("run_remote_command", purpose)
             try:
                 key_path.chmod(0o600)
                 return remote_command(
                     policy, server, key_path, command, hosts, timeout,
-                    on_output=command_progress("run_remote_command", purpose),
+                    on_output=output,
                 )
             finally:
+                finish()
                 key_path.unlink(missing_ok=True)
                 hosts.unlink(missing_ok=True)
 

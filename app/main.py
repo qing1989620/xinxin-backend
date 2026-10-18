@@ -21,7 +21,7 @@ from fastapi import (
 )
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse, StreamingResponse, Response
 from pydantic import BaseModel, ConfigDict, Field
 
 from .agent import TaskManager
@@ -33,6 +33,7 @@ from .config import (
 from .creative import gallery, plot_csv, transform_image
 from .conversations import deletion_preview, purge_conversation, batch_deletion_preview, purge_conversations
 from .files import FileLibrary, FileTooLarge, UploadConflict
+from .image_preview import image_preview
 from .model import endpoint
 from .mail import MailCodes
 from .skills import SkillRouter
@@ -861,6 +862,17 @@ def create_app(config=None):
             return {"columns": list(pd.read_csv(library.path(ident), nrows=0).columns)}
         except Exception:
             raise ValueError("无法读取 CSV 列，请检查文件编码与格式") from None
+
+    @app.get("/api/v1/files/{ident}/preview", dependencies=[Depends(owner)])
+    def preview_file(ident: str):
+        row = library.get(ident)
+        if row["mime"] not in {"image/png", "image/jpeg", "image/webp", "image/gif"}:
+            raise ValueError("此文件不支持图片预览，请下载原文件")
+        # Revalidate existence and library boundary even on a cache hit.
+        content = image_preview(library.path(ident), row["sha256"])
+        return Response(content, media_type="image/webp", headers={
+            "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff",
+        })
 
     @app.get("/api/v1/files/{ident}/download", dependencies=[Depends(owner)])
     def download(ident: str, inline: bool = False):

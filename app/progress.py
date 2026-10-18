@@ -46,23 +46,18 @@ class ProgressNarrator:
         else:
             text = f"{label}已返回结果，接下来核对内容并推进。"
         self.note(text, source="platform", tool=name, ok=bool(ok))
-        self.finish_waits(name)
 
-    def finish_waits(self, name=None):
+    def finish_waits(self, command_id=None):
         for ident, state in self.waits.items():
-            if state.get("done") or not state["notice_at"] or name and state["name"] != name:
+            if state.get("done") or not state["notice_at"] or command_id and ident != command_id:
                 continue
             self.emit("progress.wait", {"command_id": ident, "text": "本步等待已结束，实际结果以工具或停止确认记录为准。", "finished": True})
             state["done"] = True
 
-    def command(self, ident, name, purpose, output, elapsed, byte_count, *, final=False):
+    def command(self, ident, name, purpose, output, elapsed, byte_count):
         state = self.waits.setdefault(ident, {"bytes": 0, "changed_at": 0, "notice_at": 0, "name": name})
         if byte_count != state["bytes"]:
             state.update(bytes=byte_count, changed_at=elapsed)
-        if final:
-            if state["notice_at"]:
-                self.emit("progress.wait", {"command_id": ident, "text": "本条命令已结束等待，实际结果见后续执行说明。", "finished": True, "elapsed_seconds": elapsed})
-            return
         if elapsed < 20 or elapsed - state["notice_at"] < 30 and state["notice_at"]:
             return
         quiet = max(0, int(elapsed - state["changed_at"]))
