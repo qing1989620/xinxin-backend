@@ -10,9 +10,10 @@ import sys
 import threading
 from pathlib import Path
 
-from .config import ROOT
+from .config import ROOT, DEFAULT_MODEL_CALLS, DEFAULT_TASK_SECONDS, TOKENS_PER_MODEL_CALL
 from .execution import Policy, run_command, remote_command
-from .model import ModelGateway
+from .model import ModelGateway, ModelBudgetExceeded
+from .recovery import previous_work
 from .persona import build_system_prompt
 from .store import encode, now, uid
 from .creative import plot_csv, transform_image, gallery
@@ -215,26 +216,22 @@ class TaskManager:
         conversation_id=None,
         permission="read",
         server_id=None,
-        max_calls=8,
-        max_seconds=300,
+        max_calls=DEFAULT_MODEL_CALLS,
+        max_seconds=DEFAULT_TASK_SECONDS,
         request_key=None,
         operation=None,
         operation_input=None,
         allow_memory=False,
+        max_total_tokens=None,
     ):
+        signature_input = [
+            task, conversation_id, permission, server_id, max_calls, max_seconds,
+            operation_input, bool(allow_memory),
+        ]
+        if max_total_tokens is not None:
+            signature_input.append({"max_total_tokens": max_total_tokens})
         signature = hashlib.sha256(
-            encode(
-                [
-                    task,
-                    conversation_id,
-                    permission,
-                    server_id,
-                    max_calls,
-                    max_seconds,
-                    operation_input,
-                    bool(allow_memory),
-                ]
-            ).encode()
+            encode(signature_input).encode()
         ).hexdigest()
         if request_key:
             existing = self.store.one(
@@ -272,7 +269,7 @@ class TaskManager:
             raise ValueError("此对话已有运行中的任务，请等待或取消")
         ident = uid()
         self.store.execute(
-            "INSERT INTO runs(id,conversation_id,task,status,permission,server_id,max_calls,max_seconds,created,updated,request_key,request_signature,allow_memory) VALUES(?,?,?,'queued',?,?,?,?,?,?,?,?,?)",
+            "INSERT INTO runs(id,conversation_id,task,status,permission,server_id,max_calls,max_seconds,created,updated,request_key,request_signature,allow_memory,max_total_tokens) VALUES(?,?,?,'queued',?,?,?,?,?,?,?,?,?,?)",
             (
                 ident,
                 cid,
@@ -286,6 +283,7 @@ class TaskManager:
                 request_key,
                 signature,
                 int(allow_memory),
+                max_total_tokens if max_total_tokens is not None else max_calls * TOKENS_PER_MODEL_CALL,
             ),
         )
         self.store.message(cid, "user", task)
@@ -625,6 +623,7 @@ class TaskManager:
                             usage,
                             flag,
                             run["max_calls"],
+                            max_tokens=run["max_total_tokens"],
                             transport=self.model_transport,
                         )
                         tools, events = self._tools(run, flag), AgentEvents()
@@ -661,6 +660,12 @@ class TaskManager:
                         memories = self.store.all(
                             "SELECT content FROM memories ORDER BY created DESC LIMIT 20"
                         )
+                        recovery = previous_work(self.store, run)
+                        if recovery:
+                            self.store.event(ident, "context.restored", {
+                                "runs": len(recovery),
+                                "events": sum(len(item["events"]) for item in recovery),
+                            })
                         prompt = build_system_prompt(
                             run,
                             matches,
@@ -668,6 +673,7 @@ class TaskManager:
                             self.store.directory
                             / "workspaces"
                             / run["conversation_id"],
+                            recovery=recovery,
                         )
                         agent = Agent(
                             llm=gateway,
@@ -704,6 +710,7 @@ class TaskManager:
                                 answered = True
                                 self.store.event(ident, "delta", {"text": delta})
                         if not answered:
+                            gateway.check_budget()
                             raise RuntimeError(
                                 "任务未形成最终答复，可能已达到工具调用预算"
                             )
@@ -719,6 +726,11 @@ class TaskManager:
         except TimeoutError:
             flag.set()
             status, error = "failed", "任务超过时间预算，已停止本地受管执行。"
+        except ModelBudgetExceeded as exc:
+            error = str(exc)
+            self.store.event(ident, "budget.exhausted", {
+                "kind": exc.kind, "used": exc.used, "limit": exc.limit,
+            })
         except Exception as exc:
             error = self.redact(str(exc))
         finally:

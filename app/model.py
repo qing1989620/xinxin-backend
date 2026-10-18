@@ -5,6 +5,18 @@ from urllib.parse import urlsplit
 
 import httpx
 
+from .config import DEFAULT_MODEL_CALLS, TOKENS_PER_MODEL_CALL
+
+
+class ModelBudgetExceeded(RuntimeError):
+    def __init__(self, kind, used, limit):
+        self.kind, self.used, self.limit = kind, used, limit
+        label = "模型调用次数" if kind == "calls" else "累计令牌"
+        super().__init__(
+            f"本轮{label}达到预算（{used}/{limit}），尚未形成最终答复；"
+            "可调整执行预算后继续，已执行的工具记录会保留。"
+        )
+
 
 def endpoint(value):
     parsed = urlsplit(value)
@@ -33,23 +45,27 @@ class ModelGateway:
         key,
         record_usage,
         cancelled,
-        max_calls=8,
-        max_tokens=50000,
+        max_calls=DEFAULT_MODEL_CALLS,
+        max_tokens=None,
         transport=None,
     ):
         self.url, self.model, self.key = endpoint(url), model, key
         self.record_usage, self.cancelled = record_usage, cancelled
-        self.max_calls, self.max_tokens = max_calls, max_tokens
+        self.max_calls = max_calls
+        self.max_tokens = (
+            max_tokens if max_tokens is not None else max_calls * TOKENS_PER_MODEL_CALL
+        )
         self.calls, self.tokens = 0, 0
+        self.request_tokens = 0
         self.transport = transport
 
     async def apredict(self, messages, tools=None, stream=False, **kwargs):
         if self.cancelled.is_set():
             raise RuntimeError("任务已取消")
-        if self.calls >= self.max_calls or self.tokens >= self.max_tokens:
-            raise RuntimeError("任务达到模型调用或 token 预算")
+        self.check_budget()
         self.calls += 1
-        self.record_usage({"calls": self.calls, "total_tokens": self.tokens})
+        self.request_tokens = 0
+        self.record_usage(self.usage())
         payload = {
             "model": self.model,
             "messages": messages,
@@ -91,15 +107,30 @@ class ModelGateway:
     def _usage(self, data):
         usage = data.get("usage")
         if usage:
-            self.tokens += int(usage.get("total_tokens", 0))
+            total = int(usage.get("total_tokens", 0))
+            self.tokens += max(0, total - self.request_tokens)
+            self.request_tokens = max(self.request_tokens, total)
             self.record_usage(
                 {
-                    "calls": self.calls,
-                    "total_tokens": self.tokens,
+                    **self.usage(),
                     "prompt_tokens_last": usage.get("prompt_tokens", 0),
                     "completion_tokens_last": usage.get("completion_tokens", 0),
                 }
             )
+
+    def usage(self):
+        return {
+            "calls": self.calls,
+            "total_tokens": self.tokens,
+            "max_calls": self.max_calls,
+            "max_total_tokens": self.max_tokens,
+        }
+
+    def check_budget(self):
+        if self.calls >= self.max_calls:
+            raise ModelBudgetExceeded("calls", self.calls, self.max_calls)
+        if self.tokens >= self.max_tokens:
+            raise ModelBudgetExceeded("tokens", self.tokens, self.max_tokens)
 
     async def _stream(self, payload):
         calls = {}

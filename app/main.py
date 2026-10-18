@@ -26,7 +26,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from .agent import TaskManager
 from .auth import Auth, password_hash, password_matches
-from .config import Config, ROOT
+from .config import Config, ROOT, DEFAULT_MODEL_CALLS, DEFAULT_TASK_SECONDS
 from .creative import gallery, plot_csv, transform_image
 from .files import FileLibrary, FileTooLarge, UploadConflict
 from .model import endpoint
@@ -93,8 +93,9 @@ class RunInput(Input):
     conversation_id: str | None = None
     permission: Literal["read", "workspace", "full"] = "read"
     server_id: str | None = None
-    max_calls: int = Field(default=8, ge=1, le=20)
-    max_seconds: int = Field(default=300, ge=10, le=1800)
+    max_calls: int = Field(default=DEFAULT_MODEL_CALLS, ge=1, le=20)
+    max_seconds: int = Field(default=DEFAULT_TASK_SECONDS, ge=10, le=1800)
+    max_total_tokens: int | None = Field(default=None, ge=5000, le=1000000)
     request_key: str = Field(min_length=8, max_length=100)
     file_ids: list[str] = Field(default_factory=list, max_length=10)
     allow_memory: bool = False
@@ -491,15 +492,26 @@ def create_app(config=None):
             task += "\n\n本轮附件（使用文件工具读取）：" + encode(
                 [{"id": f["id"], "name": f["name"]} for f in attachments]
             )
+        existing = store.one(
+            "SELECT max_calls,max_seconds FROM runs WHERE request_key=?",
+            (body.request_key,),
+        )
+        calls, seconds = body.max_calls, body.max_seconds
+        if existing:
+            if "max_calls" not in body.model_fields_set:
+                calls = existing["max_calls"]
+            if "max_seconds" not in body.model_fields_set:
+                seconds = existing["max_seconds"]
         return await manager.submit(
             task,
             body.conversation_id,
             body.permission,
             body.server_id,
-            body.max_calls,
-            body.max_seconds,
+            calls,
+            seconds,
             body.request_key,
             allow_memory=body.allow_memory,
+            max_total_tokens=body.max_total_tokens,
         )
 
     @app.get("/api/v1/runs/{ident}", dependencies=[Depends(owner)])

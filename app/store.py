@@ -70,6 +70,12 @@ class Store:
                 db.execute(
                     "ALTER TABLE runs ADD COLUMN allow_memory INTEGER NOT NULL DEFAULT 0"
                 )
+            if "max_total_tokens" not in {
+                row["name"] for row in db.execute("PRAGMA table_info(runs)")
+            }:
+                db.execute(
+                    "ALTER TABLE runs ADD COLUMN max_total_tokens INTEGER NOT NULL DEFAULT 50000"
+                )
             if "archived" not in {
                 row["name"] for row in db.execute("PRAGMA table_info(conversations)")
             }:

@@ -8,6 +8,9 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 ROOT = Path(__file__).resolve().parents[1]
+DEFAULT_MODEL_CALLS = 16
+DEFAULT_TASK_SECONDS = 900
+TOKENS_PER_MODEL_CALL = 20000
 load_dotenv(ROOT / ".env", override=False)
 
 

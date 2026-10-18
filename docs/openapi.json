@@ -3477,14 +3477,27 @@
             "maximum": 20.0,
             "minimum": 1.0,
             "title": "Max Calls",
-            "default": 8
+            "default": 16
           },
           "max_seconds": {
             "type": "integer",
             "maximum": 1800.0,
             "minimum": 10.0,
             "title": "Max Seconds",
-            "default": 300
+            "default": 900
+          },
+          "max_total_tokens": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "maximum": 1000000.0,
+                "minimum": 5000.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Max Total Tokens"
           },
           "request_key": {
             "type": "string",
