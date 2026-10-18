@@ -33,7 +33,7 @@ from .config import (
 from .creative import gallery, plot_csv, transform_image
 from .conversations import deletion_preview, purge_conversation, batch_deletion_preview, purge_conversations
 from .files import FileLibrary, FileTooLarge, UploadConflict
-from .image_preview import image_preview, SAFE_IMAGE_MIMES
+from .image_preview import PreviewLoader, SAFE_IMAGE_MIMES
 from .model import endpoint
 from .mail import MailCodes
 from .skills import SkillRouter
@@ -194,6 +194,7 @@ def create_app(config=None):
     library = FileLibrary(store)
     router = SkillRouter(store)
     manager = TaskManager(store, auth, config, library, router)
+    previews = PreviewLoader()
 
     async def scheduled_jobs():
         while True:
@@ -226,10 +227,15 @@ def create_app(config=None):
     @asynccontextmanager
     async def lifespan(app):
         scheduler = asyncio.create_task(scheduled_jobs())
-        yield
-        scheduler.cancel()
-        await asyncio.gather(scheduler, return_exceptions=True)
-        await manager.close()
+        try:
+            yield
+        finally:
+            scheduler.cancel()
+            await asyncio.gather(scheduler, return_exceptions=True)
+            try:
+                await manager.close()
+            finally:
+                previews.close()
 
     app = FastAPI(title="Xinxin Private Agent", version="0.1.0", lifespan=lifespan)
     app.state.store, app.state.auth, app.state.manager = store, auth, manager
@@ -866,23 +872,23 @@ def create_app(config=None):
             raise ValueError("无法读取 CSV 列，请检查文件编码与格式") from None
 
     @app.get("/api/v1/files/{ident}/preview", dependencies=[Depends(owner)])
-    def preview_file(ident: str):
+    async def preview_file(ident: str):
         row = library.get(ident)
         if row["mime"] not in SAFE_IMAGE_MIMES:
             raise ValueError("此文件不支持图片预览，请下载原文件")
         # Revalidate existence and library boundary even on a cache hit.
-        content = image_preview(library.path(ident), row["sha256"])
+        content = await previews.load(library.path(ident), row["sha256"])
         return Response(content, media_type="image/webp", headers={
             "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff",
         })
 
     @app.get("/api/v1/files/{ident}/download", dependencies=[Depends(owner)])
-    def download(ident: str, inline: bool = False):
+    async def download(ident: str, inline: bool = False):
         row = library.get(ident)
         safe_image = row["mime"] in SAFE_IMAGE_MIMES
         if inline and safe_image:
             # Older installed clients use this URL for display; avoid sending megabyte originals.
-            return preview_file(ident)
+            return await preview_file(ident)
         return FileResponse(
             library.path(ident),
             media_type=row["mime"] if safe_image else "application/octet-stream",
@@ -1050,15 +1056,15 @@ def create_app(config=None):
         return gallery()
 
     @app.get("/api/v1/tools/gallery/{name}", dependencies=[Depends(owner)])
-    def gallery_image(name: str, original: bool = False):
+    async def gallery_image(name: str, original: bool = False):
         if name not in {row["id"] for row in gallery()}:
             raise HTTPException(404, "样图不存在")
         path = ROOT / "resources/plot/gallery" / (name + ".png")
-        if not path.resolve().is_relative_to((ROOT / "resources/plot/gallery").resolve()):
+        if not path.is_file() or not path.resolve().is_relative_to((ROOT / "resources/plot/gallery").resolve()):
             raise HTTPException(404, "样图不存在")
         if not original:
             stat = path.stat()
-            return Response(image_preview(path, f"{stat.st_mtime_ns}:{stat.st_size}"), media_type="image/webp", headers={
+            return Response(await previews.load(path, f"{stat.st_mtime_ns}:{stat.st_size}"), media_type="image/webp", headers={
                 "Cache-Control": "private, max-age=3600", "X-Content-Type-Options": "nosniff",
             })
         return FileResponse(

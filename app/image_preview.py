@@ -1,5 +1,7 @@
 """Bounded private previews; originals stay unchanged and require authentication."""
 from collections import OrderedDict
+from concurrent.futures import ThreadPoolExecutor
+import asyncio
 from io import BytesIO
 from pathlib import Path
 from threading import BoundedSemaphore, Lock
@@ -15,20 +17,22 @@ MAX_PREVIEW_EDGE = 1024
 MAX_CACHED_PREVIEWS = 64
 
 
+def _cached_preview(key):
+    with _cache_lock:
+        value = _preview_cache.get(key)
+        if value is not None:
+            _preview_cache.move_to_end(key)
+        return value
+
+
 def image_preview(path: Path, checksum: str) -> bytes:
     key = (path, checksum)
-    def cached():
-        with _cache_lock:
-            value = _preview_cache.get(key)
-            if value is not None:
-                _preview_cache.move_to_end(key)
-            return value
-    value = cached()
+    value = _cached_preview(key)
     if value is not None:
         return value
     with _decode_slot:
         # Concurrent misses for the same image share one encode instead of queuing repeats.
-        value = cached()
+        value = _cached_preview(key)
         if value is None:
             value = _encode_preview(path)
             with _cache_lock:
@@ -36,6 +40,35 @@ def image_preview(path: Path, checksum: str) -> bytes:
                 while len(_preview_cache) > MAX_CACHED_PREVIEWS:
                     _preview_cache.popitem(last=False)
         return value
+
+
+class PreviewLoader:
+    """Queue cold work outside the HTTP/Agent thread pools; coalesce each image."""
+    def __init__(self):
+        self._worker = ThreadPoolExecutor(max_workers=1, thread_name_prefix="image-preview")
+        self._pending = {}
+
+    async def load(self, path: Path, checksum: str) -> bytes:
+        key = (path, checksum)
+        value = _cached_preview(key)
+        if value is not None:
+            return value
+        pending = self._pending.get(key)
+        if pending is None:
+            pending = asyncio.get_running_loop().run_in_executor(self._worker, image_preview, path, checksum)
+            self._pending[key] = pending
+            def finished(future):
+                if self._pending.get(key) is future:
+                    self._pending.pop(key, None)
+                # Observe failures even when the only client disconnected.
+                if not future.cancelled():
+                    future.exception()
+            pending.add_done_callback(finished)
+        # A disconnected requester must not cancel the shared job for other clients.
+        return await asyncio.shield(pending)
+
+    def close(self):
+        self._worker.shutdown(wait=False, cancel_futures=True)
 
 
 def _encode_preview(path: Path) -> bytes:
@@ -49,7 +82,7 @@ def _encode_preview(path: Path) -> bytes:
             original.thumbnail((MAX_PREVIEW_EDGE, MAX_PREVIEW_EDGE))
             picture = ImageOps.exif_transpose(original)
             if picture.mode not in {"RGB", "RGBA"}:
-                picture = picture.convert("RGBA" if "transparency" in picture.info else "RGB")
+                picture = picture.convert("RGBA" if "A" in picture.getbands() or "transparency" in picture.info else "RGB")
             quality = 70
             while True:
                 output = BytesIO()
