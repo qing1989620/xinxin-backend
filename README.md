@@ -67,7 +67,9 @@ python -m pip install -e '.[test]'
 python -m pytest -q
 ```
 
-离线模型替身测试真实 Tina 工具循环，不消耗模型费用或连接真实服务器。[API 契约](docs/openapi.json)、[需求](docs/product-spec.md)、[来源许可](THIRD_PARTY.md)。最新后端137项测试通过；保留每会话80K/300K/1000K上下文（完整档1,048,576），累计用量独立。常规64次调用、3600秒、8,000,000累计tokens，旧记录保留原预算。公开模型说明、真实阶段和限频等待解释持久化；预算耗尽通过专门接口续原任务、使用新预算和当前授权，不盲重做副作用。批量删除作为单次SQL/文件暂存事务，失败回滚，保留独立上传及未选对话引用。私有图片预览限制尺寸、解码并发/缓存并去EXIF，下载原图不变。见 [本批规格](docs/agent-usability-spec.md)、[双轴复验](docs/agent-usability-review.md) 与 [真实云端记录](docs/agent-usability-runtime.json)：断开SSE后命令继续、24秒等待有说明，原任务续接4次调用/12.381秒完成脚本及产物核验，前轮文件未改写，批量合成清理和11张现有图片通过。此前可靠停止与CSV编码/临时HTTP验收见 [历史执行证据](docs/agent-runtime-runtime.json)。SMTP实际送达和图像转换仍待服务授权。
+离线模型替身测试真实 Tina 工具循环，不消耗模型费用或连接真实服务器。[API 契约](docs/openapi.json)、[需求](docs/product-spec.md)、[来源许可](THIRD_PARTY.md)。最新后端143项测试通过；保留每会话80K/300K/1000K上下文（完整档1,048,576），累计用量独立。常规64次调用、3600秒、8,000,000累计tokens，旧记录保留原预算。公开模型说明、真实阶段和限频等待解释持久化；预算耗尽通过专门接口续原任务、使用新预算和当前授权，不盲重做副作用。批量删除作为单次SQL/文件暂存事务，失败回滚，保留独立上传及未选对话引用。私有图片预览限制尺寸、解码并发/缓存并去EXIF，下载原图不变。见 [本批规格](docs/agent-usability-spec.md)、[双轴复验](docs/agent-usability-review.md) 与 [真实云端记录](docs/agent-usability-runtime.json)：断开SSE后命令继续、24秒等待有说明，原任务续接4次调用/12.381秒完成脚本及产物核验，前轮文件未改写，批量合成清理和11张现有图片通过。此前可靠停止与CSV编码/临时HTTP验收见 [历史执行证据](docs/agent-runtime-runtime.json)。SMTP实际送达和图像转换仍待服务授权。
+
+2026-10-19仅更新后端图片服务，前端和APK保持原版本。预览与旧inline展示统一为≤64KiB/最长边1024的WebP，专用编码线程合并冷请求、64项结果缓存，透明通道及原图保留。真实私有HTTPS验证11张图片、95张图库及全部原图散列，11张预览总量减少76.8%，旧inline减少96.6%；手机实际链路仍需主人复测。见 [图片规格](docs/image-performance-spec.md)、[独立审查及冷/热性能边界](docs/image-performance-review.md)、[云端聚合记录](docs/image-performance-runtime.json)。
 
 邮箱支持绑定单主人、验证码登录及找回密码，QQ SMTP 默认 465 SSL/TLS；授权码在设置中加密保存。没有授权码会明确提示不可用。6 位验证码 10 分钟有效、单次消费、最多 5 次失败、60 秒冷却与持久发送配额；重置密码撤销旧会话。
 

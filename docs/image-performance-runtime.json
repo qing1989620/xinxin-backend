@@ -1,0 +1,220 @@
+{
+  "date": "2026-10-19",
+  "timezone": "Asia/Shanghai",
+  "scope": "Backend-only deployment; no frontend edits/build/deploy/push, no APK replacement. Existing original files read-only; ephemeral acceptance sessions revoked. No model calls or owner task replay.",
+  "baseline_git_revision": "6c8efddc152f7abbc73438e0fbdc0a6e4313bb9a",
+  "backend_code_revision": "fc36b530f2b0c9855d7dc5160cc56bf54d811702",
+  "release_archive_sha256": "cdd7d175b9ff97d1ec715559212e45db12ce54b9a67aba971fe51f39e6e0fc04",
+  "frontend_git_revision_unchanged": "e17ff643f91fe46b48ec2d4756fa3934e28b8f1a",
+  "frontend_code_revision_unchanged": "c8224215d142fe8cbc11b495b24b2bab1e1e8746",
+  "apk_sha256_unchanged": "ca72dc8cf15319d05e1ab25ebe810fea02398da4a67187f8115e83a2319e9172",
+  "physical_phone_end_to_end_verified": false,
+  "checks": {
+    "private_images_within_transfer_and_dimension_caps": true,
+    "legacy_inline_uses_same_lightweight_preview": true,
+    "original_download_bytes_and_names_preserved": true,
+    "all_95_gallery_images_and_original_pngs_valid": true,
+    "warm_cache_does_not_bypass_authentication": true,
+    "frontend_static_tree_unchanged": true,
+    "apk_download_sha256_unchanged": true,
+    "private_https_gateway_healthy": true
+  },
+  "limits": {
+    "preview_max_bytes": 65536,
+    "preview_max_edge": 1024,
+    "cached_results": 64,
+    "cached_result_max_bytes": 4194304,
+    "parallel_decoders": 1
+  },
+  "private_https_acceptance": {
+    "scope": "Server-side private HTTPS acceptance, no real phone endpoint timing and no model calls. Original files read-only; session revoked.",
+    "backend_code_revision": "fc36b530f2b0c9855d7dc5160cc56bf54d811702",
+    "checks": {
+      "private_images_within_transfer_and_dimension_caps": true,
+      "legacy_inline_uses_same_lightweight_preview": true,
+      "original_download_bytes_and_names_preserved": true,
+      "all_95_gallery_images_and_original_pngs_valid": true,
+      "warm_cache_does_not_bypass_authentication": true,
+      "frontend_static_tree_unchanged": true,
+      "apk_download_sha256_unchanged": true,
+      "private_https_gateway_healthy": true
+    },
+    "files": {
+      "count": 11,
+      "preview_total_bytes": 453044,
+      "preview_max_bytes": 64622,
+      "original_total_bytes": 13245620,
+      "all_original_checksums_unchanged": true,
+      "file_identifiers_in_report": false
+    },
+    "gallery": {
+      "count": 95,
+      "preview_total_bytes": 3774822,
+      "preview_max_bytes": 64888,
+      "original_png_checksums_match": true
+    },
+    "apk_sha256": "ca72dc8cf15319d05e1ab25ebe810fea02398da4a67187f8115e83a2319e9172",
+    "frontend_tree_sha256": "a7551cf265337af46a731699fd43063d78d6891c2d96fe1d49961ed7779e4026"
+  },
+  "loopback_benchmark": {
+    "before": {
+      "count": 11,
+      "first_http": {
+        "count": 11,
+        "total_bytes": 1955454,
+        "max_bytes": 569002,
+        "max_seconds": 0.0155,
+        "median_seconds": 0.0082
+      },
+      "warm_http": {
+        "count": 11,
+        "total_bytes": 1955454,
+        "max_bytes": 569002,
+        "max_seconds": 0.0116,
+        "median_seconds": 0.0083
+      },
+      "six_parallel_http": {
+        "count": 11,
+        "total_bytes": 1955454,
+        "max_bytes": 569002,
+        "max_seconds": 0.0685,
+        "median_seconds": 0.0502
+      },
+      "parallel_page_seconds": 0.1071,
+      "legacy_inline": {
+        "count": 11,
+        "total_bytes": 13245620,
+        "max_bytes": 6889050,
+        "max_seconds": 0.1573,
+        "median_seconds": 0.0183
+      },
+      "isolated_cold_encode": {
+        "count": 11,
+        "total_bytes": 1955454,
+        "max_bytes": 569002,
+        "max_seconds": 0.493,
+        "median_seconds": 0.254
+      },
+      "gallery_first_12": {
+        "count": 12,
+        "total_bytes": 4367825,
+        "max_bytes": 1031745,
+        "max_seconds": 0.8923,
+        "median_seconds": 0.7932
+      },
+      "gallery_page_seconds": 1.6477,
+      "phone_route_sample": []
+    },
+    "after": {
+      "count": 11,
+      "first_http": {
+        "count": 11,
+        "total_bytes": 453044,
+        "max_bytes": 64622,
+        "max_seconds": 0.4117,
+        "median_seconds": 0.1502
+      },
+      "warm_http": {
+        "count": 11,
+        "total_bytes": 453044,
+        "max_bytes": 64622,
+        "max_seconds": 0.0208,
+        "median_seconds": 0.0079
+      },
+      "six_parallel_http": {
+        "count": 11,
+        "total_bytes": 453044,
+        "max_bytes": 64622,
+        "max_seconds": 0.0523,
+        "median_seconds": 0.0397
+      },
+      "parallel_page_seconds": 0.0905,
+      "legacy_inline": {
+        "count": 11,
+        "total_bytes": 453044,
+        "max_bytes": 64622,
+        "max_seconds": 0.01,
+        "median_seconds": 0.0089
+      },
+      "isolated_cold_encode": {
+        "count": 11,
+        "total_bytes": 453044,
+        "max_bytes": 64622,
+        "max_seconds": 0.4356,
+        "median_seconds": 0.1422
+      },
+      "gallery_first_12": {
+        "count": 12,
+        "total_bytes": 440886,
+        "max_bytes": 60088,
+        "max_seconds": 1.4808,
+        "median_seconds": 1.2384
+      },
+      "gallery_page_seconds": 2.4862,
+      "phone_route_sample": []
+    }
+  },
+  "gallery_original_png_bytes": 61989873,
+  "transfer_reduction_percent": {
+    "private_preview": 76.83,
+    "legacy_inline": 96.58,
+    "gallery_first_12": 89.91,
+    "gallery_all_95": 93.91
+  },
+  "tests": {
+    "passed": 143,
+    "failed": 0,
+    "errors": 0,
+    "junit": "verification/image-performance-tests.xml",
+    "seconds": 87.168
+  },
+  "review": {
+    "standard_hard_violations": 0,
+    "standard_judgment_smells": 0,
+    "spec_findings_fixed": 2,
+    "remaining_spec_defects": 0,
+    "independent_verification": true
+  },
+  "post_rollout": {
+    "active_tasks": 0,
+    "verified_backup_before_activation": true,
+    "backend_code_path": "/opt/xinxin/releases/backend-fc36b53",
+    "backend_restart_policy": "on-failure",
+    "services": {
+      "xinxin-backend": {
+        "active": "active",
+        "enabled": "enabled",
+        "memory_current_bytes": 531947520,
+        "rss_bytes": 582955008
+      },
+      "xinxin-web": {
+        "active": "active",
+        "enabled": "enabled",
+        "memory_current_bytes": 49487872,
+        "rss_bytes": 29450240
+      },
+      "tailscaled": {
+        "active": "active",
+        "enabled": "enabled",
+        "memory_current_bytes": 30031872,
+        "rss_bytes": 41463808
+      }
+    },
+    "host_mem_available_bytes": 2473496576,
+    "loopback_gateway_health": "ok",
+    "gallery_warm_first_12": {
+      "count": 12,
+      "median_seconds": 0.0054,
+      "max_seconds": 0.01,
+      "sequential_page_seconds": 0.0688
+    },
+    "scope": "Single server sample, not physical phone latency or peak load guarantee."
+  },
+  "measurement_limits": [
+    "Loopback HTTP and server-side private HTTPS are not physical phone end-to-end timings. No current route RTT sample was obtained.",
+    "First HTTP pass after accepting all 95 gallery images may be cold due to the bounded 64-entry cache; do not compare it as an equal warm pass.",
+    "Gallery cold encoding trades server CPU for fewer transferred bytes: first 12 cold requests took 2.4862s versus 1.6477s for prior original PNG responses. Warm sequential 12-image sample took 0.0688s.",
+    "Process memory and available host memory are single samples, not a peak-load or long-term guarantee.",
+    "All gallery previews and originals were requested through authenticated private HTTPS; filenames, file IDs, image contents and credentials are absent from this report."
+  ]
+}

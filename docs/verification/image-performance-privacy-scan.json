@@ -1,0 +1,16 @@
+{
+  "frontend": {
+    "blobs": 214,
+    "credential_or_private_identifier_matches": 0,
+    "private_paths": 0
+  },
+  "backend": {
+    "blobs": 735,
+    "credential_or_private_identifier_matches": 0,
+    "private_paths": 0
+  },
+  "apk:Xinxin-0.1.0-cloud.apk": {
+    "entries": 442,
+    "credential_or_private_identifier_matches": 0
+  }
+}
