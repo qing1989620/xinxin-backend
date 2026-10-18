@@ -36,7 +36,8 @@ def living_group(group):
 
 def stop_group(record, *, owned_child=False):
     group = record["pid"]
-    identity = process_identity(group)
+    # An unreaped child created by this supervisor cannot have a reused PID.
+    identity = None if owned_child else process_identity(group)
     if identity is not None and identity != record["identity"] and not owned_child:
         raise RuntimeError("Remote process identity changed; refusing to signal it")
     for sig, wait in ((signal.SIGTERM, 0.4), (signal.SIGKILL, 1.5)):
